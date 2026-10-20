@@ -8,7 +8,10 @@
     halbe:     { label: "Halbe",     size: "0,5",  liters: 0.5,  emoji: "🍻", chug: true },
     longdrink: { label: "Longdrink", size: "0,3",  liters: 0.3,  emoji: "🍹", chug: true },
     shot:      { label: "Shot",      size: "2 cl", liters: 0.02, emoji: "🥃", chug: false },
+    wasser:    { label: "Wasser",    size: "💧",   liters: 0.5,  emoji: "💧", chug: false, water: true },
   };
+  const isAlc = (d) => !DRINKS[d.kind]?.water;
+  const alcL = (d) => (isAlc(d) ? DRINKS[d.kind]?.liters || 0 : 0);
   const DRINK_KEYS = Object.keys(DRINKS);
   const CHUG_KEYS = DRINK_KEYS.filter((k) => DRINKS[k].chug);
   const VOTE_CATS = [
@@ -31,7 +34,8 @@
   // ---------- Zustand ----------
   const S = {
     tab: store.get("bbb_tab") || "abend",
-    players: [], evenings: [], drinks: [], chugs: [], departures: [], pukes: [], votes: [],
+    players: [], evenings: [], drinks: [], chugs: [], departures: [], pukes: [], votes: [], media: [], messages: [],
+    abendView: "zaehlen", month: null, kastenPreis: store.get("bbb_kasten") || "",
     loaded: false, error: null,
     me: store.get("bbb_me"), pin: store.get("bbb_pin"), authed: false, authChecked: false,
     watch: { player: store.get("bbb_watch_player"), kind: store.get("bbb_watch_kind") || "halbe", running: false, start: 0, result: null, raf: 0 },
@@ -84,7 +88,7 @@
   function errMsg(e) { return (e && (e.message || e.details)) || "Unbekannter Fehler"; }
 
   // ---------- Daten ----------
-  const TABLES = ["players", "evenings", "drinks", "chugs", "departures", "pukes", "votes"];
+  const TABLES = ["players", "evenings", "drinks", "chugs", "departures", "pukes", "votes", "media", "messages"];
   async function fetchAll(table) {
     const out = [];
     for (let from = 0; ; from += 1000) {
@@ -162,6 +166,7 @@
     if (table === "evenings") return false;
     if (table === "departures") return true;
     if (table === "votes") return row.voter_id === S.me;
+    if (table === "media" || table === "messages") return row.player_id === S.me;
     return Date.now() - new Date(row.created_at).getTime() < FRESH_MS;
   }
 
@@ -172,11 +177,13 @@
     return [...ids].map(player).filter(Boolean);
   }
   function eveningStats(ev) {
-    const drinks = S.drinks.filter((d) => d.evening_id === ev.id);
-    const liters = drinks.reduce((s, d) => s + (DRINKS[d.kind]?.liters || 0), 0);
+    const all = S.drinks.filter((d) => d.evening_id === ev.id);
+    const drinks = all.filter(isAlc);
+    const liters = drinks.reduce((s, d) => s + alcL(d), 0);
     const end = ev.ended_at ? new Date(ev.ended_at) : new Date();
     return {
-      drinks, liters,
+      all, drinks, liters, waters: all.filter((d) => !isAlc(d)),
+      media: S.media.filter((m) => m.evening_id === ev.id),
       pukes: S.pukes.filter((p) => p.evening_id === ev.id),
       departures: S.departures.filter((d) => d.evening_id === ev.id).sort((a, b) => a.left_at.localeCompare(b.left_at)),
       chugs: S.chugs.filter((c) => c.evening_id === ev.id),
@@ -195,14 +202,32 @@
     S.chugs.filter((c) => c.kind === kind).forEach((c) => { if (!best[c.player_id] || c.ms < best[c.player_id].ms) best[c.player_id] = c; });
     return Object.values(best).filter((c) => player(c.player_id)).sort((a, b) => a.ms - b.ms);
   }
+  function departureStats(evs = S.evenings) {
+    const dep = {}, lastMan = {}, firstOut = {};
+    evs.filter((e) => e.ended_at).forEach((ev) => {
+      const st = eveningStats(ev);
+      if (st.players.length < 2) return;
+      const leftAt = new Map(st.departures.map((d) => [d.player_id, nightMin(d.left_at)]));
+      const stayEnd = nightMin(ev.ended_at);
+      const times = st.players.map((p) => ({ id: p.id, t: leftAt.has(p.id) ? leftAt.get(p.id) : stayEnd }));
+      times.forEach((x) => { const d = (dep[x.id] ||= { sum: 0, n: 0 }); d.sum += x.t; d.n++; });
+      const max = Math.max(...times.map((x) => x.t)), min = Math.min(...times.map((x) => x.t));
+      if (max !== min) {
+        times.filter((x) => x.t === max).forEach((x) => (lastMan[x.id] = (lastMan[x.id] || 0) + 1));
+        times.filter((x) => x.t === min).forEach((x) => (firstOut[x.id] = (firstOut[x.id] || 0) + 1));
+      }
+    });
+    return { dep, lastMan, firstOut };
+  }
   function playerTotals(id) {
-    const ds = S.drinks.filter((d) => d.player_id === id);
+    const dsAll = S.drinks.filter((d) => d.player_id === id);
+    const ds = dsAll.filter(isAlc);
     const titles = {};
     S.evenings.forEach((ev) => VOTE_CATS.forEach((c) => { if (voteWinners(ev.id, c.id).winners.includes(id)) titles[c.id] = (titles[c.id] || 0) + 1; }));
     const best = {};
     CHUG_KEYS.forEach((k) => { const b = bestChugs(k).find((c) => c.player_id === id); if (b) best[k] = b.ms; });
     const evs = new Set(); ["drinks", "chugs", "departures", "pukes"].forEach((t) => S[t].forEach((r) => r.player_id === id && r.evening_id && evs.add(r.evening_id)));
-    return { n: ds.length, l: ds.reduce((s, d) => s + (DRINKS[d.kind]?.liters || 0), 0), pukes: S.pukes.filter((x) => x.player_id === id).length, titles, best, evenings: evs.size };
+    return { n: ds.length, water: dsAll.length - ds.length, halbe: ds.filter((d) => d.kind === "halbe").length, uploads: S.media.filter((m) => m.player_id === id).length, l: ds.reduce((s, d) => s + alcL(d), 0), pukes: S.pukes.filter((x) => x.player_id === id).length, titles, best, evenings: evs.size };
   }
 
   // ---------- Render ----------
@@ -222,7 +247,15 @@
     document.querySelectorAll("#tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));
     if (S.tab !== "exen") stopRaf();
     const views = { abend: viewAbend, exen: viewWatch, spiele: viewGames, stats: viewStats, profil: viewProfile };
+    const keep = {};
+    v.querySelectorAll("input[id], textarea[id]").forEach((i) => { if (i.type !== "file") keep[i.id] = { v: i.value, f: document.activeElement === i, s: i.selectionStart }; });
+    const chatEl = v.querySelector(".chat-list");
+    const nearBottom = !chatEl || window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
     v.innerHTML = (views[S.tab] || viewAbend)();
+    Object.entries(keep).forEach(([id, k]) => { const i = document.getElementById(id); if (i) { i.value = k.v; if (k.f) { i.focus(); try { i.setSelectionRange(k.s, k.s); } catch {} } } });
+    if (v.querySelector(".chat-list") && (nearBottom || S.scrollChat)) { S.scrollChat = false; requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight)); }
+    const game = S.tab === "spiele" && S.game && allGames().find((x) => x.id === S.game);
+    if (game?.after) game.after();
     if (S.tab === "exen") paintWatch();
     if (S.tab === "spiele" && S.game === "rad") drawWheel();
     if (S.openEvening && !$("#sheet").hidden) openEvening(S.openEvening, true);
@@ -262,6 +295,20 @@
   // --- Abend ---
   function viewAbend() {
     const ev = currentEvening();
+    const evId = ev?.id || null;
+    const nMsg = S.messages.filter((m) => (m.evening_id || null) === evId).length;
+    const nMedia = ev ? S.media.filter((m) => m.evening_id === evId).length : S.media.length;
+    const seg = `<div class="seg big">
+      <button class="${S.abendView === "zaehlen" ? "on" : ""}" data-act="abend-view" data-v="zaehlen">🍺 Zählen</button>
+      <button class="${S.abendView === "chat" ? "on" : ""}" data-act="abend-view" data-v="chat">💬 Chat${nMsg ? ` <span class="seg-n">${nMsg}</span>` : ""}</button>
+      <button class="${S.abendView === "album" ? "on" : ""}" data-act="abend-view" data-v="album">📸 Album${nMedia ? ` <span class="seg-n">${nMedia}</span>` : ""}</button>
+    </div>`;
+    if (S.abendView === "chat") return seg + viewChat(ev);
+    if (S.abendView === "album") return seg + viewAlbum(ev);
+    return seg + viewCount();
+  }
+  function viewCount() {
+    const ev = currentEvening();
     if (!ev) {
       const last = S.evenings.filter((e) => e.ended_at).sort((a, b) => b.started_at.localeCompare(a.started_at))[0];
       return `
@@ -293,13 +340,14 @@
       <button class="btn ghost block" data-act="end-evening">Abend beenden</button>`;
   }
   function playerCard(p, st, dep) {
-    const mine = st.drinks.filter((d) => d.player_id === p.id);
-    const liters = mine.reduce((s, d) => s + DRINKS[d.kind].liters, 0);
+    const mineAll = st.all.filter((d) => d.player_id === p.id);
+    const mine = mineAll.filter(isAlc);
+    const liters = mine.reduce((s, d) => s + alcL(d), 0);
     const pukes = st.pukes.filter((x) => x.player_id === p.id).length;
     const btns = DRINK_KEYS.map((k) => {
-      const n = mine.filter((d) => d.kind === k).length;
-      return `<button class="dbtn" data-act="drink" data-p="${p.id}" data-k="${k}" aria-label="${DRINKS[k].label} für ${esc(p.name)}">
-        <span class="de">${DRINKS[k].emoji}</span><span class="dl">${DRINKS[k].size}</span><span class="dc">${n ? "×" + n : "&nbsp;"}</span></button>`;
+      const n = mineAll.filter((d) => d.kind === k).length;
+      return `<button class="dbtn ${DRINKS[k].water ? "water" : ""}" data-act="drink" data-p="${p.id}" data-k="${k}" aria-label="${DRINKS[k].label} für ${esc(p.name)}">
+        <span class="de">${DRINKS[k].emoji}</span><span class="dl">${DRINKS[k].water ? "Wasser" : DRINKS[k].size}</span><span class="dc">${n ? "×" + n : "&nbsp;"}</span></button>`;
     }).join("");
     const enteredBy = dep && dep.entered_by && dep.entered_by !== p.id ? player(dep.entered_by) : null;
     return `
@@ -352,11 +400,11 @@
       </div>
       <div class="card section">
         <h3>Top 5 · ${DRINKS[w.kind].label} ${DRINKS[w.kind].size}</h3>
-        ${rankList(best.slice(0, 5).map((c) => ({ p: player(c.player_id), val: fmtMs(c.ms) })))}
+        ${rankList(best.slice(0, 5).map((c) => ({ p: player(c.player_id), val: fmtMs(c.ms) + chugVideoBtn(c) })))}
       </div>
       <div class="card section">
         <div class="section-head"><h3>Letzte Versuche</h3>${isAdmin() ? '<span class="badge gold">Admin</span>' : ""}</div>
-        ${all.length ? `<div class="list">${all.map((c) => `<div class="li">${avatar(player(c.player_id), 30)}<div class="grow"><b>${esc(player(c.player_id).name)}</b><span class="muted small">${fmtDate(c.created_at)} · ${fmtTime(c.created_at)}</span></div><span class="val">${fmtMs(c.ms)}</span>${canDelete("chugs", c) ? `<button class="icon-btn" data-act="del" data-t="chugs" data-id="${c.id}" aria-label="Löschen">✕</button>` : ""}</div>`).join("")}</div>` : `<div class="empty">Noch keine Versuche.</div>`}
+        ${all.length ? `<div class="list">${all.map((c) => `<div class="li">${avatar(player(c.player_id), 30)}<div class="grow"><b>${esc(player(c.player_id).name)}</b><span class="muted small">${fmtDate(c.created_at)} · ${fmtTime(c.created_at)}</span></div><span class="val">${fmtMs(c.ms)}</span>${chugVideoBtn(c, true)}${canDelete("chugs", c) ? `<button class="icon-btn" data-act="del" data-t="chugs" data-id="${c.id}" aria-label="Löschen">✕</button>` : ""}</div>`).join("")}</div>` : `<div class="empty">Noch keine Versuche.</div>`}
         ${isAdmin() ? "" : `<div class="muted small">Eigene Fehleinträge kannst du 10 Minuten lang löschen, danach nur Georg.</div>`}
       </div>`;
   }
@@ -402,32 +450,25 @@
       <div class="seg big">
         <button class="${S.statsView === "ranglisten" ? "on" : ""}" data-act="stats-view" data-v="ranglisten">🏆 Ranglisten</button>
         <button class="${S.statsView === "abende" ? "on" : ""}" data-act="stats-view" data-v="abende">📜 Abende</button>
+        <button class="${S.statsView === "monat" ? "on" : ""}" data-act="stats-view" data-v="monat">✨ Monat</button>
       </div>
-      ${S.statsView === "abende" ? viewBack() : viewRank()}`;
+      ${S.statsView === "abende" ? viewBack() : S.statsView === "monat" ? viewMonth() : viewRank()}`;
   }
   function viewRank() {
     const k = S.rankKind;
     const best = bestChugs(k);
     const tot = {};
-    S.drinks.forEach((d) => { const t = (tot[d.player_id] ||= { n: 0, l: 0 }); t.n++; t.l += DRINKS[d.kind]?.liters || 0; });
+    const wat = {};
+    S.drinks.forEach((d) => {
+      if (!isAlc(d)) { wat[d.player_id] = (wat[d.player_id] || 0) + 1; return; }
+      const t = (tot[d.player_id] ||= { n: 0, l: 0 }); t.n++; t.l += alcL(d);
+    });
+    const waterRows = Object.entries(wat).filter(([id]) => player(id)).sort((a, b) => b[1] - a[1]).map(([id, n]) => ({ p: player(id), val: `${n} × 💧`, sub: tot[id] ? `1 Wasser auf ${(tot[id].n / n).toFixed(1).replace(".", ",")} Getränke` : "" }));
     const drinkRows = Object.entries(tot).filter(([id]) => player(id)).sort((a, b) => b[1].l - a[1].l).map(([id, t]) => ({ p: player(id), val: fmtL(t.l), sub: `${t.n} Getränke` }));
     const pk = {};
     S.pukes.forEach((x) => (pk[x.player_id] = (pk[x.player_id] || 0) + 1));
     const pukeRows = Object.entries(pk).filter(([id]) => player(id)).sort((a, b) => b[1] - a[1]).map(([id, n]) => ({ p: player(id), val: `${n} × 🤮` }));
-    const dep = {}, lastMan = {}, firstOut = {};
-    S.evenings.filter((e) => e.ended_at).forEach((ev) => {
-      const st = eveningStats(ev);
-      if (st.players.length < 2) return;
-      const leftAt = new Map(st.departures.map((d) => [d.player_id, nightMin(d.left_at)]));
-      const stayEnd = nightMin(ev.ended_at);
-      const times = st.players.map((p) => ({ id: p.id, t: leftAt.has(p.id) ? leftAt.get(p.id) : stayEnd }));
-      times.forEach((x) => { const d = (dep[x.id] ||= { sum: 0, n: 0 }); d.sum += x.t; d.n++; });
-      const max = Math.max(...times.map((x) => x.t)), min = Math.min(...times.map((x) => x.t));
-      if (max !== min) {
-        times.filter((x) => x.t === max).forEach((x) => (lastMan[x.id] = (lastMan[x.id] || 0) + 1));
-        times.filter((x) => x.t === min).forEach((x) => (firstOut[x.id] = (firstOut[x.id] || 0) + 1));
-      }
-    });
+    const { dep, lastMan, firstOut } = departureStats();
     const depRows = Object.entries(dep).filter(([id]) => player(id)).sort((a, b) => a[1].sum / a[1].n - b[1].sum / b[1].n)
       .map(([id, d]) => ({ p: player(id), val: "Ø " + nightMinToClock(d.sum / d.n), sub: `${firstOut[id] || 0}× Erster heim · ${lastMan[id] || 0}× Letzter Mann` }));
     const titles = {};
@@ -440,10 +481,11 @@
       <div class="card section">
         <h3>⏱️ Schnellstes Exen</h3>
         <div class="seg">${CHUG_KEYS.map((x) => `<button class="${k === x ? "on" : ""}" data-act="rkind" data-k="${x}">${DRINKS[x].label} ${DRINKS[x].size}</button>`).join("")}</div>
-        ${rankList(best.map((c) => ({ p: player(c.player_id), val: fmtMs(c.ms), sub: fmtDate(c.created_at) })))}
+        ${rankList(best.map((c) => ({ p: player(c.player_id), val: fmtMs(c.ms) + chugVideoBtn(c), sub: fmtDate(c.created_at) })))}
       </div>
       <div class="card section"><h3>🍺 Ewige Trinker-Tabelle</h3>${rankList(drinkRows)}</div>
       <div class="card section"><h3>🤮 Kotz-Counter</h3>${rankList(pukeRows)}</div>
+      <div class="card section"><h3>💧 Vernünftigster Bua</h3>${rankList(waterRows)}</div>
       <div class="card section"><h3>🏠 Wer geht am frühesten heim?</h3>${rankList(depRows)}<div class="muted small">Zählt nur beendete Abende. Wer sich nicht abmeldet, gilt bis zum Abend-Ende als da.</div></div>
       ${titleBlock}`;
   }
@@ -459,8 +501,9 @@
   }
   function viewBack() {
     const evs = S.evenings.slice().sort((a, b) => b.started_at.localeCompare(a.started_at));
-    const totL = S.drinks.reduce((s, d) => s + (DRINKS[d.kind]?.liters || 0), 0);
+    const totL = S.drinks.reduce((s, d) => s + alcL(d), 0);
     const beers = S.drinks.filter((d) => d.kind === "helles" || d.kind === "halbe").length;
+    const kaesten = kastenCount(S.drinks);
     const year = new Date().getFullYear();
     const yearEvs = evs.filter((e) => new Date(e.started_at).getFullYear() === year);
     return `
@@ -471,7 +514,7 @@
           <div class="stat"><b>${fmtL(totL)}</b><span>Getrunken</span></div>
           <div class="stat"><b>${beers}</b><span>Bier</span></div>
         </div>
-        <div class="muted small">${yearEvs.length} Abende in ${year} · ${S.pukes.length}× gekotzt · ${S.chugs.length}× geext</div>
+        <div class="muted small">≈ ${kaesten.toFixed(1).replace(".", ",")} Kästen Bier · ${yearEvs.length} Abende in ${year} · ${S.pukes.length}× gekotzt · ${S.chugs.length}× geext · ${S.media.length} Fotos & Videos</div>
       </div>
       <div class="section">${evs.length ? evs.map(eveningItem).join("") : `<div class="empty">Noch kein Abend. Starte im Tab „Abend“ den ersten.</div>`}</div>`;
   }
@@ -479,12 +522,12 @@
     const ev = byId(S.evenings, id);
     if (!ev) return closeSheet();
     const st = eveningStats(ev);
-    const per = st.players.map((p) => { const ds = st.drinks.filter((d) => d.player_id === p.id); return { p, n: ds.length, l: ds.reduce((s, d) => s + DRINKS[d.kind].liters, 0) }; }).sort((a, b) => b.l - a.l);
+    const per = st.players.map((p) => { const ds = st.drinks.filter((d) => d.player_id === p.id); return { p, n: ds.length, l: ds.reduce((s, d) => s + alcL(d), 0), w: st.waters.filter((d) => d.player_id === p.id).length }; }).sort((a, b) => b.l - a.l);
     const maxL = Math.max(0.01, ...per.map((x) => x.l));
     const pn = (pid) => esc(player(pid)?.name || "?");
     const timeline = [
       { t: ev.started_at, txt: "Abend gestartet" },
-      ...st.drinks.map((d) => ({ t: d.created_at, txt: `${DRINKS[d.kind]?.emoji} ${pn(d.player_id)}: ${DRINKS[d.kind]?.label}`, table: "drinks", row: d })),
+      ...st.all.map((d) => ({ t: d.created_at, txt: `${DRINKS[d.kind]?.emoji} ${pn(d.player_id)}: ${DRINKS[d.kind]?.label}`, table: "drinks", row: d })),
       ...st.departures.map((d) => ({ t: d.left_at, txt: `🏠 ${pn(d.player_id)} geht heim`, table: "departures", row: d })),
       ...st.pukes.map((x) => ({ t: x.created_at, txt: `🤮 ${pn(x.player_id)} kotzt`, table: "pukes", row: x })),
       ...st.chugs.map((c) => ({ t: c.created_at, txt: `⏱️ ${pn(c.player_id)} ext ${DRINKS[c.kind]?.label} in ${fmtMs(c.ms)}`, table: "chugs", row: c })),
@@ -502,7 +545,10 @@
       <div class="section"><h3>Wer hat wie viel</h3>
         <div class="list">${per.map((x) => `<div class="li">${avatar(x.p, 32)}<div class="grow"><b>${esc(x.p.name)}</b><div class="bar" style="--pc:${esc(x.p.color)}"><i style="width:${(x.l / maxL) * 100}%"></i></div></div><span class="val">${fmtL(x.l)}<br><span class="muted small">${x.n}×</span></span></div>`).join("") || `<div class="empty">Nichts eingetragen.</div>`}</div>
       </div>
+      ${st.media.length ? `<div class="section"><div class="section-head"><h3>📸 Album (${st.media.length})</h3><button class="btn sm ghost" data-act="upload" data-ev="${ev.id}">+ Hinzufügen</button></div>${mediaGrid(st.media)}</div>` : `<button class="btn ghost block" data-act="upload" data-ev="${ev.id}">📸 Fotos/Videos zu diesem Abend hinzufügen</button>`}
       ${ev.ended_at ? voteBlock(ev) : ""}
+      ${kastenBlock(ev, per)}
+      ${chatSummary(ev)}
       <div class="section"><div class="section-head"><h3>Verlauf</h3>${isAdmin() ? '<span class="muted small">✕ löscht einen Eintrag</span>' : ""}</div>
         <div class="timeline">${timeline.map((x) => `<div class="tl"><span class="num">${fmtTime(x.t)}</span><span class="grow">${x.txt}</span>${x.table && canDelete(x.table, x.row) ? `<button class="icon-btn" data-act="del" data-t="${x.table}" data-id="${x.row.id}" aria-label="Eintrag löschen">✕</button>` : ""}</div>`).join("")}</div>
       </div>
@@ -532,13 +578,14 @@
       <div class="big-stats">
         <div class="stat"><b>${t.n}</b><span>Getränke</span></div>
         <div class="stat"><b>${fmtL(t.l)}</b><span>Liter</span></div>
-        <div class="stat"><b>${t.pukes}</b><span>Kotzer</span></div>
+        <div class="stat"><b>${t.water}</b><span>Wasser</span></div>
       </div>
       <div class="card section">
         <h3>Bestzeiten</h3>
         <div class="list">${CHUG_KEYS.map((k) => `<div class="li"><span style="font-size:20px">${DRINKS[k].emoji}</span><div class="grow"><b>${DRINKS[k].label} ${DRINKS[k].size}</b></div><span class="val">${t.best[k] ? fmtMs(t.best[k]) : "–"}</span></div>`).join("")}</div>
         ${titleStr ? `<div class="small">${titleStr}</div>` : ""}
       </div>
+      ${achievementsBlock(p.id)}
       <div class="card section">
         <h3>Mein Profil</h3>
         <div class="settings">
@@ -621,12 +668,12 @@
 
   // ---------- Spiele ----------
   const GAMES = [
-    { id: "ring", name: "Ring of Fire", emoji: "🔥", desc: "Karte ziehen, Regel befolgen. Der 4. König trinkt den Becher." },
-    { id: "bus", name: "Busfahrer", emoji: "🚌", desc: "Vier Fragen richtig, sonst trinken und von vorn." },
-    { id: "eher", name: "Wer würde eher …", emoji: "👉", desc: "Auf 3 zeigen alle auf jemanden. Die meisten Finger trinken." },
-    { id: "nie", name: "Ich hab noch nie …", emoji: "🙊", desc: "Wer es schon gemacht hat, trinkt." },
-    { id: "rad", name: "Glücksrad", emoji: "🎡", desc: "Wer trinkt? Wie viel? Das Rad entscheidet." },
-    { id: "wuerfel", name: "Würfel", emoji: "🎲", desc: "Zwei Würfel für Mäxchen, Schocken & Co." },
+    { id: "ring", cat: "karten", name: "Ring of Fire", emoji: "🔥", desc: "Karte ziehen, Regel befolgen. Der 4. König trinkt den Becher." },
+    { id: "bus", cat: "karten", name: "Busfahrer", emoji: "🚌", desc: "Vier Fragen richtig, sonst trinken und von vorn." },
+    { id: "eher", cat: "fragen", name: "Wer würde eher …", emoji: "👉", desc: "Auf 3 zeigen alle auf jemanden. Die meisten Finger trinken." },
+    { id: "nie", cat: "fragen", name: "Ich hab noch nie …", emoji: "🙊", desc: "Wer es schon gemacht hat, trinkt." },
+    { id: "rad", cat: "action", name: "Glücksrad", emoji: "🎡", desc: "Wer trinkt? Wie viel? Das Rad entscheidet." },
+    { id: "wuerfel", cat: "karten", name: "Würfel", emoji: "🎲", desc: "Zwei Würfel für Mäxchen, Schocken & Co." },
   ];
   const SUITS = [{ s: "♥", red: true }, { s: "♦", red: true }, { s: "♠", red: false }, { s: "♣", red: false }];
   const RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "B", "D", "K", "A"];
@@ -665,14 +712,22 @@
   ];
   const WHEEL_AMOUNTS = ["1 Schluck", "2 Schluck", "3 Schluck", "Exen!", "Verteil 3", "Joker – nix", "Alle trinken", "Wasser trinken 💧"];
 
+  const CATS = [
+    { id: "party", label: "🎉 Party-Modus" },
+    { id: "karten", label: "🃏 Karten & Würfel" },
+    { id: "action", label: "⚡ Action" },
+    { id: "fragen", label: "💬 Fragen & Raten" },
+  ];
+  const allGames = () => GAMES.concat(EXTRA.games);
   function viewGames() {
     if (!S.game) {
       return `
         <h2>Spiele</h2>
-        <div class="games">${GAMES.map((g) => `<button class="game" data-act="game" data-g="${g.id}"><span class="game-e">${g.emoji}</span><b>${g.name}</b><span class="muted small">${g.desc}</span></button>`).join("")}</div>
-        <div class="muted small" style="text-align:center">Trinkt bewusst. Wasser zwischendurch macht den Abend länger.</div>`;
+        ${CATS.map((c) => `<div class="section"><h3>${c.label}</h3><div class="games">${allGames().filter((g) => g.cat === c.id).map((g) => `<button class="game ${g.cat === "party" ? "featured" : ""}" data-act="game" data-g="${g.id}"><span class="game-e">${g.emoji}</span><b>${g.name}</b><span class="muted small">${g.desc}</span></button>`).join("")}</div></div>`).join("")}
+        <div class="muted small" style="text-align:center">Trinkt bewusst. Wasser zwischendurch macht den Abend länger. 💧</div>`;
     }
-    const g = GAMES.find((x) => x.id === S.game);
+    const g = allGames().find((x) => x.id === S.game);
+    if (g.view) return `<div class="game-top"><button class="btn sm ghost" data-act="game-back">‹ Spiele</button><h2>${g.emoji} ${g.name}</h2></div>${g.view()}`;
     const body = { ring: gameRing, bus: gameBus, eher: () => gamePrompt(EHER, "Wer würde eher …", "Auf 3 zeigen alle auf jemanden. Wer die meisten Finger abbekommt, trinkt."), nie: () => gamePrompt(NIE, "Ich hab noch nie …", "Wer es schon gemacht hat, trinkt."), rad: gameWheel, wuerfel: gameDice }[S.game]();
     return `<div class="game-top"><button class="btn sm ghost" data-act="game-back">‹ Spiele</button><h2>${g.emoji} ${g.name}</h2></div>${body}`;
   }
@@ -831,14 +886,290 @@
       <details class="card rules"><summary><h3 style="display:inline">Mäxchen kurz erklärt</h3></summary><p class="small" style="margin:8px 0 0">Würfle verdeckt und sag einen Wert an, der höher sein muss als der vorherige (gerne gelogen). Der Nächste glaubt es und würfelt weiter, oder er deckt auf. Erwischt beim Lügen = trinken, zu Unrecht angezweifelt = der Zweifler trinkt. Reihenfolge: 31 &lt; 32 &lt; … &lt; 65 &lt; Pasch (11 bis 66) &lt; 21 (Mäxchen).</p></details>`;
   }
 
+  // ---------- Extra-Spiele (games.js) ----------
+  const EXTRA = window.BBB_GAMES
+    ? window.BBB_GAMES({ S, $, esc, avatar, activePlayers, render: () => render(), buzz, shuffle, pick, toast, player })
+    : { games: [], actions: {}, stop() {} };
+
+  // ---------- Medien ----------
+  const mediaUrl = (m) => sb.storage.from("media").getPublicUrl(m.path).data.publicUrl;
+  function mediaThumb(m) {
+    const u = esc(mediaUrl(m));
+    return m.kind === "video"
+      ? `<button class="tile" data-act="media-open" data-id="${m.id}"><video src="${u}#t=0.1" muted playsinline preload="metadata"></video><span class="tile-play">▶</span>${m.chug_id ? '<span class="tile-badge">🏆</span>' : ""}</button>`
+      : `<button class="tile" data-act="media-open" data-id="${m.id}"><img src="${u}" alt="${esc(m.caption || "Foto")}" loading="lazy"></button>`;
+  }
+  function mediaGrid(list) {
+    const ms = list.slice().sort((a, b) => b.created_at.localeCompare(a.created_at));
+    return ms.length ? `<div class="grid3">${ms.map(mediaThumb).join("")}</div>` : `<div class="empty">Noch keine Fotos oder Videos.</div>`;
+  }
+  function chugVideoBtn(c, allowAdd) {
+    const v = S.media.find((m) => m.chug_id === c.id);
+    if (v) return ` <button class="mini-btn" data-act="media-open" data-id="${v.id}" aria-label="Video ansehen">🎥</button>`;
+    return allowAdd ? ` <button class="mini-btn add" data-act="upload" data-chug="${c.id}" data-ev="${c.evening_id || ""}" aria-label="Video hinzufügen">＋🎥</button>` : "";
+  }
+  function openMedia(id) {
+    const m = byId(S.media, id);
+    if (!m) return;
+    const p = player(m.player_id);
+    const c = m.chug_id ? byId(S.chugs, m.chug_id) : null;
+    const ev = m.evening_id ? byId(S.evenings, m.evening_id) : null;
+    const u = esc(mediaUrl(m));
+    S.openEvening = null;
+    openSheet(`
+      <div class="viewer">${m.kind === "video" ? `<video src="${u}" controls playsinline autoplay></video>` : `<img src="${u}" alt="">`}</div>
+      ${c ? `<div class="rule"><b>🏆 ${esc(player(c.player_id)?.name)}: ${DRINKS[c.kind]?.label} in ${fmtMs(c.ms)}</b></div>` : ""}
+      ${m.caption ? `<div style="font-weight:700">${esc(m.caption)}</div>` : ""}
+      <div class="muted small">${p ? esc(p.name) + " · " : ""}${fmtDate(m.created_at)} ${fmtTime(m.created_at)}${ev ? " · " + esc(evName(ev)) : ""}</div>
+      <div class="row">
+        <button class="btn ghost" data-act="${ev ? "open-evening" : "close"}" data-id="${ev?.id || ""}">${ev ? "Zum Abend" : "Schließen"}</button>
+        ${canDelete("media", m) ? `<button class="btn ghost" data-act="media-del" data-id="${m.id}" style="color:var(--red)">Löschen</button>` : ""}
+      </div>`);
+  }
+  function resizeMax(file, max = 1600) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const k = Math.min(1, max / Math.max(img.width, img.height));
+        const c = document.createElement("canvas");
+        c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        URL.revokeObjectURL(url);
+        c.toBlob((b) => (b ? resolve(b) : reject(new Error("Bild konnte nicht verarbeitet werden"))), "image/jpeg", 0.85);
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Bild konnte nicht gelesen werden")); };
+      img.src = url;
+    });
+  }
+  function startUpload(target) {
+    S.upTarget = target;
+    const inp = $("#media-input");
+    inp.accept = target.chug ? "video/*" : "image/*,video/*";
+    inp.value = "";
+    inp.click();
+  }
+  function uploadSheet(file) {
+    const isVideo = file.type.startsWith("video/");
+    if (isVideo && file.size > 50 * 1024 * 1024) return toast("Video ist zu groß (max. 50 MB). Schneid es kürzer.");
+    S.upFile = file;
+    const prev = URL.createObjectURL(file);
+    S.openEvening = null;
+    openSheet(`
+      <h2>${S.upTarget.chug ? "Rekord-Video" : S.upTarget.chat ? "Foto in den Chat" : "Zum Album hinzufügen"}</h2>
+      <div class="viewer">${isVideo ? `<video src="${prev}" controls playsinline muted></video>` : `<img src="${prev}" alt="">`}</div>
+      <div class="field"><label for="up-caption">Beschreibung (optional)</label><input class="input" id="up-caption" maxlength="140" placeholder="z. B. Hansi nach der dritten Halben"></div>
+      <button class="btn gold block" data-act="do-upload">Hochladen</button>
+      <button class="btn ghost block" data-act="close">Abbrechen</button>`);
+  }
+  async function doUpload(btn) {
+    const file = S.upFile, t = S.upTarget || {};
+    if (!file) return;
+    const caption = ($("#up-caption")?.value || "").trim() || null;
+    const isVideo = file.type.startsWith("video/");
+    btn.textContent = "Lädt hoch …";
+    try {
+      const blob = isVideo ? file : await resizeMax(file);
+      const ext = isVideo ? ((file.name.split(".").pop() || "mp4").toLowerCase().replace(/[^a-z0-9]/g, "") || "mp4") : "jpg";
+      const ev = t.ev || null;
+      const path = `${ev || "allgemein"}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const { error } = await sb.storage.from("media").upload(path, blob, { contentType: isVideo ? file.type || "video/mp4" : "image/jpeg", upsert: false });
+      if (error) throw error;
+      const m = await insert("media", { evening_id: ev, player_id: S.me, chug_id: t.chug || null, kind: isVideo ? "video" : "photo", path, caption: t.chat ? null : caption });
+      if (t.chat) await insert("messages", { evening_id: ev, player_id: S.me, body: caption, media_id: m.id });
+      S.upFile = null;
+      closeSheet();
+      toast(isVideo ? "Video hochgeladen 🎥" : "Foto hochgeladen 📸");
+      if (t.chat) S.scrollChat = true;
+      render();
+    } catch (e) {
+      console.error(e);
+      btn.textContent = "Nochmal versuchen";
+      toast("Upload fehlgeschlagen: " + errMsg(e));
+    }
+  }
+
+  // ---------- Chat ----------
+  const REACTS = ["🍺", "😂", "🔥", "🤮", "👑", "❤️"];
+  function chatItems(ev) {
+    const evId = ev?.id || null;
+    const msgs = S.messages.filter((m) => (m.evening_id || null) === evId).map((m) => ({ t: m.created_at, msg: m }));
+    if (!ev) return msgs.sort((a, b) => a.t.localeCompare(b.t)).slice(-200);
+    const linked = new Set(S.messages.map((m) => m.media_id).filter(Boolean));
+    const pn = (id) => esc(player(id)?.name || "?");
+    const events = [
+      { t: ev.started_at, ev: "🍺 Abend gestartet. Prost!" },
+      ...S.chugs.filter((c) => c.evening_id === evId).map((c) => ({ t: c.created_at, ev: `⏱️ ${pn(c.player_id)} ext ${DRINKS[c.kind]?.label} ${DRINKS[c.kind]?.size} in ${fmtMs(c.ms)}${bestChugs(c.kind)[0]?.id === c.id ? " · 🏆 REKORD" : ""}` })),
+      ...S.departures.filter((d) => d.evening_id === evId).map((d) => ({ t: d.left_at, ev: `🏠 ${pn(d.player_id)} ist heim (${fmtTime(d.left_at)})` })),
+      ...S.pukes.filter((x) => x.evening_id === evId).map((x) => ({ t: x.created_at, ev: `🤮 ${pn(x.player_id)} hat gekotzt` })),
+      ...S.media.filter((m) => m.evening_id === evId && !linked.has(m.id)).map((m) => ({ t: m.created_at, ev: `📸 ${pn(m.player_id)} hat ${m.kind === "video" ? "ein Video" : "ein Foto"} ins Album gestellt`, media: m })),
+      ...(ev.ended_at ? [{ t: ev.ended_at, ev: "🌙 Abend beendet" }] : []),
+    ];
+    return msgs.concat(events).sort((a, b) => a.t.localeCompare(b.t)).slice(-250);
+  }
+  function chatHtml(items, readonly) {
+    if (!items.length) return `<div class="empty" style="text-align:center;padding:30px 0">Noch nichts los hier. Schreib die erste Nachricht!</div>`;
+    let lastDay = "";
+    return items.map((it) => {
+      const day = fmtDate(it.t, { weekday: "long", day: "numeric", month: "long" });
+      const sep = day !== lastDay ? `<div class="chat-day">${day}</div>` : "";
+      lastDay = day;
+      if (it.ev) return sep + `<div class="chat-event">${it.ev}${it.media ? `<div class="chat-media">${mediaThumb(it.media)}</div>` : ""}<span>${fmtTime(it.t)}</span></div>`;
+      const m = it.msg, p = player(m.player_id), mine = m.player_id === S.me;
+      const media = m.media_id ? byId(S.media, m.media_id) : null;
+      const reacts = Object.entries(m.reactions || {}).filter(([, ids]) => ids?.length);
+      return sep + `<div class="msg ${mine ? "mine" : ""}">
+        ${mine ? "" : avatar(p, 30)}
+        <div class="msg-col">
+          ${mine ? "" : `<span class="msg-name" style="color:${esc(p?.color || "#888")}">${esc(p?.name || "?")}</span>`}
+          <div class="bubble" ${readonly ? "" : `data-act="msg-open" data-id="${m.id}"`}>
+            ${media ? `<div class="chat-media">${mediaThumb(media)}</div>` : ""}
+            ${m.body ? `<span>${esc(m.body)}</span>` : ""}
+            <span class="msg-time">${fmtTime(m.created_at)}</span>
+          </div>
+          ${reacts.length ? `<div class="reacts">${reacts.map(([e, ids]) => `<button class="react ${ids.includes(S.me) ? "on" : ""}" ${readonly ? "" : `data-act="react" data-id="${m.id}" data-e="${e}"`}>${e} ${ids.length}</button>`).join("")}</div>` : ""}
+        </div>
+      </div>`;
+    }).join("");
+  }
+  function viewChat(ev) {
+    return `
+      <div class="muted small" style="text-align:center">${ev ? `Chat zum ${esc(evName(ev))}. Alles Wichtige vom Abend landet hier automatisch.` : "Stammtisch-Chat. Starte einen Abend, dann gibt es einen eigenen Chat dazu."}</div>
+      <div class="chat-list">${chatHtml(chatItems(ev))}</div>
+      <form class="composer" data-chat-form>
+        <button type="button" class="comp-btn" data-act="upload" data-chat="1" data-ev="${ev?.id || ""}" aria-label="Foto senden">📷</button>
+        <input class="input" id="chat-input" maxlength="500" placeholder="Nachricht …" autocomplete="off" enterkeyhint="send">
+        <button type="submit" class="comp-btn send" aria-label="Senden">➤</button>
+      </form>`;
+  }
+  function viewAlbum(ev) {
+    const list = ev ? S.media.filter((m) => m.evening_id === ev.id) : S.media;
+    return `
+      <button class="btn gold block" data-act="upload" data-ev="${ev?.id || ""}">📸 Foto oder Video hinzufügen</button>
+      <div class="muted small">${ev ? `Album vom ${esc(evName(ev))}. Fotos werden automatisch verkleinert, Videos am besten kurz halten (max. 50 MB).` : "Alle Fotos und Videos. Starte einen Abend, dann landen neue Fotos direkt in dessen Album."}</div>
+      ${mediaGrid(list)}`;
+  }
+  function chatSummary(ev) {
+    const n = S.messages.filter((m) => m.evening_id === ev.id).length;
+    return n ? `<button class="btn ghost block" data-act="chat-log" data-id="${ev.id}">💬 Chat vom Abend lesen (${n})</button>` : "";
+  }
+  async function sendChat() {
+    const inp = $("#chat-input");
+    const body = (inp?.value || "").trim();
+    if (!body) return;
+    inp.value = "";
+    S.scrollChat = true;
+    await insert("messages", { evening_id: currentEvening()?.id || null, player_id: S.me, body });
+    $("#chat-input")?.focus();
+  }
+
+  // ---------- Kasten-Rechner ----------
+  function kastenCount(drinks) {
+    return drinks.filter((d) => d.kind === "halbe").length / 20 + drinks.filter((d) => d.kind === "helles").length / 24;
+  }
+  function kastenBlock(ev, per) {
+    const st = eveningStats(ev);
+    const k = kastenCount(st.drinks);
+    const cost = store.get("bbb_cost_" + ev.id) || "";
+    const totL = per.reduce((s, x) => s + x.l, 0) || 1;
+    return `<div class="section kasten" data-ev="${ev.id}">
+      <h3>🧮 Kasten-Rechner</h3>
+      <div class="muted small">${st.drinks.filter((d) => d.kind === "halbe").length} Halbe + ${st.drinks.filter((d) => d.kind === "helles").length} Helle ≈ <b style="color:var(--foam)">${k.toFixed(1).replace(".", ",")} Kästen</b></div>
+      <div class="field"><label for="cost-${ev.id}">Was hat alles zusammen gekostet? (€)</label><input class="input" id="cost-${ev.id}" data-cost="${ev.id}" inputmode="decimal" placeholder="z. B. 45" value="${esc(cost)}"></div>
+      <div class="list">${per.map((x) => `<div class="li">${avatar(x.p, 28)}<div class="grow"><b>${esc(x.p.name)}</b><span class="muted small">${Math.round((x.l / totL) * 100)} % vom Getrunkenen</span></div><span class="val" data-share="${x.l / totL}">–</span></div>`).join("")}</div>
+      <div class="muted small">Aufgeteilt nach getrunkenen Litern. Nur auf diesem Handy gespeichert.</div>
+    </div>`;
+  }
+  function updateKasten(root) {
+    (root || document).querySelectorAll(".kasten").forEach((k) => {
+      const v = parseFloat((k.querySelector("[data-cost]")?.value || "").replace(",", "."));
+      k.querySelectorAll("[data-share]").forEach((el) => { el.textContent = v > 0 ? (v * +el.dataset.share).toFixed(2).replace(".", ",") + " €" : "–"; });
+    });
+  }
+
+  // ---------- Monatsrückblick ----------
+  const monthKey = (iso) => iso.slice(0, 7);
+  function viewMonth() {
+    const months = [...new Set(S.evenings.map((e) => monthKey(e.started_at)))].sort().reverse();
+    if (!months.length) return `<div class="empty">Noch keine Abende. Nach dem ersten Abend gibt's hier den Monatsrückblick.</div>`;
+    const m = months.includes(S.month) ? S.month : months[0];
+    const evs = S.evenings.filter((e) => monthKey(e.started_at) === m);
+    const ids = new Set(evs.map((e) => e.id));
+    const drinks = S.drinks.filter((d) => ids.has(d.evening_id));
+    const alc = drinks.filter(isAlc);
+    const liters = alc.reduce((s, d) => s + alcL(d), 0);
+    const by = (arr, f = () => 1) => { const o = {}; arr.forEach((x) => { if (player(x.player_id)) o[x.player_id] = (o[x.player_id] || 0) + f(x); }); return Object.entries(o).sort((a, b) => b[1] - a[1]); };
+    const topL = by(alc, alcL)[0];
+    const chugs = S.chugs.filter((c) => monthKey(c.created_at) === m && player(c.player_id)).sort((a, b) => a.ms - b.ms);
+    const pukeTop = by(S.pukes.filter((x) => ids.has(x.evening_id)))[0];
+    const water = by(drinks.filter((d) => !isAlc(d)))[0];
+    const { lastMan } = departureStats(evs.filter((e) => e.ended_at));
+    const last = Object.entries(lastMan).filter(([id]) => player(id)).sort((a, b) => b[1] - a[1])[0];
+    const mvp = {}; evs.forEach((e) => voteWinners(e.id, "mvp").winners.forEach((w) => (mvp[w] = (mvp[w] || 0) + 1)));
+    const mvpTop = Object.entries(mvp).filter(([id]) => player(id)).sort((a, b) => b[1] - a[1])[0];
+    const photos = S.media.filter((x) => ids.has(x.evening_id) && x.kind === "photo");
+    const bg = photos.length ? `style="background-image:linear-gradient(rgba(14,26,20,.35),rgba(14,26,20,.92)),url('${esc(mediaUrl(pick(photos)))}')"` : "";
+    const label = new Date(m + "-15").toLocaleDateString("de-DE", { month: "long", year: "numeric" });
+    const slide = (cls, inner, extra = "") => `<div class="slide ${cls}" ${extra}>${inner}</div>`;
+    const who = (id, big) => `${avatar(player(id), big || 84)}<b class="slide-name">${esc(player(id)?.name)}</b>`;
+    const slides = [
+      slide("s-intro", `<span class="slide-pre">Euer Monat</span><b class="slide-big">${label}</b><span>${evs.length} ${evs.length === 1 ? "Abend" : "Abende"} · ${photos.length} Fotos</span>`, bg),
+      slide("s-gold", `<span class="slide-pre">Zusammen getrunken</span><b class="slide-big num">${fmtL(liters)}</b><span>${alc.length} Getränke · ≈ ${kastenCount(alc).toFixed(1).replace(".", ",")} Kästen</span>`),
+      topL && slide("", `<span class="slide-pre">🍺 Trinker des Monats</span>${who(topL[0])}<span class="num">${fmtL(topL[1])}</span>`),
+      chugs[0] && slide("", `<span class="slide-pre">⏱️ Schnellster Ex</span>${who(chugs[0].player_id)}<span class="num">${DRINKS[chugs[0].kind]?.label} in ${fmtMs(chugs[0].ms)}</span>${chugVideoBtn(chugs[0])}`),
+      mvpTop && slide("", `<span class="slide-pre">👑 MVP des Monats</span>${who(mvpTop[0])}<span>${mvpTop[1]}× gewählt</span>`),
+      last && slide("", `<span class="slide-pre">🌙 Letzter Mann</span>${who(last[0])}<span>${last[1]}× als Letzter heim</span>`),
+      pukeTop && slide("s-red", `<span class="slide-pre">🤮 Kotz-König</span>${who(pukeTop[0])}<span>${pukeTop[1]}× gekotzt</span>`),
+      water && slide("s-blue", `<span class="slide-pre">💧 Vernünftigster Bua</span>${who(water[0])}<span>${water[1]} Wasser</span>`),
+      photos.length && slide("s-photos", `<span class="slide-pre">📸 Momente</span><div class="collage">${shuffle(photos).slice(0, 6).map(mediaThumb).join("")}</div>`),
+    ].filter(Boolean);
+    return `
+      <div class="chips">${months.map((x) => `<button class="chip plain ${x === m ? "on" : ""}" data-act="month-pick" data-m="${x}">${new Date(x + "-15").toLocaleDateString("de-DE", { month: "short", year: "2-digit" })}</button>`).join("")}</div>
+      <div class="slides">${slides.join("")}</div>
+      <div class="muted small" style="text-align:center">Nach links wischen ›</div>`;
+  }
+
+  // ---------- Achievements ----------
+  function achievementsBlock(pid) {
+    const t = playerTotals(pid);
+    const { lastMan } = departureStats();
+    const holds = CHUG_KEYS.some((k) => bestChugs(k)[0]?.player_id === pid);
+    const prog = (v, max) => [v >= max, `${Math.min(v, max).toLocaleString("de-DE", { maximumFractionDigits: 1 })}/${max}`];
+    const list = [
+      ["🍺", "Anstich", "Erstes Getränk eingetragen", prog(t.n, 1)],
+      ["🍻", "Halbe-Held", "50 Halbe getrunken", prog(t.halbe, 50)],
+      ["🛢️", "Hektoliter", "100 Liter insgesamt", prog(Math.floor(t.l), 100)],
+      ["⚡", "Blitz", "Halbe unter 5 Sekunden", [t.best.halbe < 5000, t.best.halbe ? fmtMs(t.best.halbe) : "–"]],
+      ["🚀", "Turbo", "Helles unter 3 Sekunden", [t.best.helles < 3000, t.best.helles ? fmtMs(t.best.helles) : "–"]],
+      ["🏆", "Rekordhalter", "Hält gerade einen Exen-Rekord", [holds, holds ? "Ja" : "Nein"]],
+      ["🏠", "Stammgast", "Bei 10 Abenden dabei", prog(t.evenings, 10)],
+      ["🌙", "Letzter Mann", "3× als Letzter heim", prog(lastMan[pid] || 0, 3)],
+      ["💧", "Vernünftig", "10 Wasser getrunken", prog(t.water, 10)],
+      ["👑", "MVP", "Einmal zum MVP gewählt", prog(t.titles.mvp || 0, 1)],
+      ["📸", "Paparazzo", "10 Fotos oder Videos", prog(t.uploads, 10)],
+      ["🤮", "Ehrenrunde", "Einmal gekotzt", prog(t.pukes, 1)],
+    ];
+    const got = list.filter((a) => a[3][0]).length;
+    return `<div class="card section">
+      <div class="section-head"><h3>🏅 Achievements</h3><span class="badge gold">${got}/${list.length}</span></div>
+      <div class="ach-grid">${list.map(([e, n, d, [ok, pr]]) => `<div class="ach ${ok ? "ok" : ""}" title="${esc(d)}"><span class="ach-e">${e}</span><b>${n}</b><span class="muted small">${esc(d)}</span><span class="ach-p">${ok ? "✓" : pr}</span></div>`).join("")}</div>
+    </div>`;
+  }
+
   // ---------- Sheets ----------
   function confirmSheet(title, text, label, cls, onYes) {
     S.openEvening = null;
     openSheet(`<h2>${title}</h2>${text ? `<p class="muted" style="margin:0">${text}</p>` : ""}<div class="row"><button class="btn ghost" data-act="close">Abbrechen</button><button class="btn ${cls}" data-act="confirm-yes">${label}</button></div>`);
     confirmSheet.cb = onYes;
   }
-  function openSheet(html) { $("#sheet-body").innerHTML = html; $("#sheet").hidden = false; }
-  function closeSheet() { $("#sheet").hidden = true; S.openEvening = null; }
+  function openSheet(html) {
+    const body = $("#sheet-body");
+    const keep = {};
+    body.querySelectorAll("input[id]").forEach((i) => { if (document.activeElement === i) keep[i.id] = i.selectionStart; });
+    body.innerHTML = html; $("#sheet").hidden = false; updateKasten(body);
+    Object.entries(keep).forEach(([id, pos]) => { const i = document.getElementById(id); if (i) { i.focus(); try { i.setSelectionRange(pos, pos); } catch {} } });
+  }
+  function closeSheet() { $("#sheet").hidden = true; S.openEvening = null; $("#sheet-body").querySelectorAll("video").forEach((v) => v.pause()); }
 
   // ---------- Aktionen ----------
   const actions = {
@@ -915,7 +1246,10 @@
       const id = el.dataset.id;
       confirmSheet("Abend löschen?", "Alle Getränke, Heimgänge, Kotzer und Stimmen dieses Abends werden gelöscht. Exen-Zeiten bleiben.", "Endgültig löschen", "red", async () => {
         closeSheet();
+        const paths = S.media.filter((m) => m.evening_id === id).map((m) => m.path);
         await remove("evenings", id);
+        if (paths.length) sb.storage.from("media").remove(paths).catch(() => {});
+        S.media = S.media.filter((m) => m.evening_id !== id); S.messages = S.messages.filter((m) => m.evening_id !== id);
         ["drinks", "departures", "pukes", "votes"].forEach((t) => (S[t] = S[t].filter((r) => r.evening_id !== id)));
         render(); toast("Abend gelöscht");
       });
@@ -931,8 +1265,12 @@
     wsave: async () => {
       const w = S.watch, ms = w.result, prev = bestChugs(w.kind)[0];
       w.result = null;
-      await insert("chugs", { evening_id: currentEvening()?.id || null, player_id: w.player, kind: w.kind, ms });
-      toast(!prev || ms < prev.ms ? "🏆 Neuer Rekord gespeichert!" : `Gespeichert: ${fmtMs(ms)}`);
+      const row = await insert("chugs", { evening_id: currentEvening()?.id || null, player_id: w.player, kind: w.kind, ms });
+      const rec = !prev || ms < prev.ms;
+      openSheet(`<div class="rule"><b>${rec ? "🏆 Neuer Rekord!" : "Gespeichert ✓"}</b><span>${esc(player(w.player)?.name)} · ${DRINKS[w.kind].label} in ${fmtMs(ms)}</span></div>
+        <p class="muted" style="margin:0;text-align:center">Hat jemand gefilmt? Lade das Video als Beweis hoch. Es erscheint in der Rangliste und im Album.</p>
+        <button class="btn gold block" data-act="upload" data-chug="${row.id}" data-ev="${row.evening_id || ""}">🎥 Video hinzufügen</button>
+        <button class="btn ghost block" data-act="close">Ohne Video</button>`);
     },
     rkind: (el) => { S.rankKind = el.dataset.k; render(); },
     "stats-view": (el) => { S.statsView = el.dataset.v; render(); },
@@ -979,8 +1317,8 @@
       catch { toast(url); }
     },
     game: (el) => { S.game = el.dataset.g; S.g = {}; render(); window.scrollTo(0, 0); },
-    "game-back": () => { S.game = null; S.g = {}; render(); },
-    "game-reset": () => { const d = S.g.driver; S.g = { driver: d }; render(); },
+    "game-back": () => { EXTRA.stop(); S.game = null; S.g = {}; render(); },
+    "game-reset": () => { EXTRA.stop(); const d = S.g.driver; S.g = { driver: d }; render(); },
     "ring-draw": () => {
       const g = S.g, ps = activePlayers();
       g.drawnBy = ps[g.turn % ps.length];
@@ -999,10 +1337,53 @@
       g.rolling = true; render();
       setTimeout(() => { g.rolling = false; g.dice = [1 + Math.floor(Math.random() * 6), 1 + Math.floor(Math.random() * 6)]; buzz(30); render(); }, 450);
     },
+    "abend-view": (el) => { S.abendView = el.dataset.v; if (S.abendView === "chat") S.scrollChat = true; render(); if (S.abendView !== "chat") window.scrollTo(0, 0); },
+    upload: (el) => startUpload({ ev: el.dataset.ev || currentEvening()?.id || null, chug: el.dataset.chug || null, chat: el.dataset.chat === "1" }),
+    "do-upload": (el) => doUpload(el),
+    "media-open": (el) => openMedia(el.dataset.id),
+    "media-del": (el) => {
+      const m = byId(S.media, el.dataset.id);
+      confirmSheet("Foto/Video löschen?", "Es wird für alle gelöscht.", "Löschen", "red", async () => {
+        closeSheet();
+        await remove("media", m.id);
+        sb.storage.from("media").remove([m.path]).catch(() => {});
+        toast("Gelöscht");
+      });
+    },
+    "msg-open": (el) => {
+      const m = byId(S.messages, el.dataset.id);
+      if (!m) return;
+      openSheet(`<h3>Reagieren</h3>
+        <div class="react-pick">${REACTS.map((e) => `<button data-act="react" data-id="${m.id}" data-e="${e}" class="${(m.reactions?.[e] || []).includes(S.me) ? "on" : ""}">${e}</button>`).join("")}</div>
+        ${canDelete("messages", m) ? `<button class="btn ghost block" data-act="msg-del" data-id="${m.id}" style="color:var(--red)">Nachricht löschen</button>` : ""}
+        <button class="btn ghost block" data-act="close">Schließen</button>`);
+    },
+    react: async (el) => {
+      const m = byId(S.messages, el.dataset.id), e = el.dataset.e;
+      if (!m) return;
+      const r = JSON.parse(JSON.stringify(m.reactions || {}));
+      const ids = new Set(r[e] || []);
+      ids.has(S.me) ? ids.delete(S.me) : ids.add(S.me);
+      r[e] = [...ids];
+      if (!r[e].length) delete r[e];
+      closeSheet(); buzz();
+      await patch("messages", m.id, { reactions: r });
+    },
+    "msg-del": async (el) => { closeSheet(); await remove("messages", el.dataset.id); },
+    "chat-log": (el) => {
+      const ev = byId(S.evenings, el.dataset.id);
+      S.openEvening = null;
+      openSheet(`<h2>💬 ${esc(evName(ev))}</h2><div class="chat-list in-sheet">${chatHtml(chatItems(ev), true)}</div><button class="btn ghost block" data-act="open-evening" data-id="${ev.id}">‹ Zurück zum Abend</button>`);
+    },
+    "month-pick": (el) => { S.month = el.dataset.m; render(); },
     "confirm-yes": () => confirmSheet.cb && confirmSheet.cb(),
   };
 
+  document.addEventListener("submit", (e) => {
+    if (e.target.matches("[data-chat-form]")) { e.preventDefault(); sendChat().catch(() => {}); }
+  });
   document.addEventListener("change", async (e) => {
+    if (e.target.id === "media-input") { if (e.target.files[0]) uploadSheet(e.target.files[0]); return; }
     if (e.target.id !== "photo-input" || !e.target.files[0]) return;
     try {
       toast("Bild wird hochgeladen …");
@@ -1016,13 +1397,15 @@
     const tab = e.target.closest("#tabbar button");
     if (tab) {
       if (S.watch.running) return toast("Erst die Stoppuhr stoppen");
-      if (S.tab === tab.dataset.tab && S.tab === "spiele") { S.game = null; S.g = {}; }
+      if (S.tab === tab.dataset.tab && S.tab === "spiele") { EXTRA.stop(); S.game = null; S.g = {}; }
       S.tab = tab.dataset.tab; store.set("bbb_tab", S.tab); render(); window.scrollTo(0, 0); return;
     }
     if (e.target.closest("#me-chip")) { S.tab = "profil"; store.set("bbb_tab", "profil"); render(); window.scrollTo(0, 0); return; }
     const el = e.target.closest("[data-act]");
-    if (!el || !actions[el.dataset.act] || el.disabled) return;
-    const lock = el.tagName === "BUTTON" && ["drink", "wsave", "add-player", "start-evening", "confirm-yes", "login-go", "save-player", "save-pin"].includes(el.dataset.act);
+    if (!el || el.disabled) return;
+    if (!actions[el.dataset.act] && EXTRA.actions[el.dataset.act]) return EXTRA.actions[el.dataset.act](el);
+    if (!actions[el.dataset.act]) return;
+    const lock = el.tagName === "BUTTON" && ["drink", "wsave", "add-player", "start-evening", "confirm-yes", "login-go", "save-player", "save-pin", "do-upload", "chat-send"].includes(el.dataset.act);
     if (lock) el.disabled = true;
     try { await actions[el.dataset.act](el); } catch (err) { console.error(err); }
     finally { if (lock) el.disabled = false; }
@@ -1032,6 +1415,7 @@
     if (e.key === "Enter" && e.target.id === "pin") $("[data-act=login-go]")?.click();
   });
   document.addEventListener("input", (e) => {
+    if (e.target.dataset.cost) { store.set("bbb_cost_" + e.target.dataset.cost, e.target.value); updateKasten(); }
     if (e.target.id === "pin" && /^\d{4}$/.test(e.target.value)) $("[data-act=login-go]")?.click();
   });
 
