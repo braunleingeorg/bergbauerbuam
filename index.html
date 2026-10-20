@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Bergbauerbuam</title>
+  <meta name="theme-color" content="#0e1a14">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Bergbauerbuam">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Grenze+Gotisch:wght@600;800&family=Manrope:wght@400;600;700;800&family=DM+Mono:wght@500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">Bergbauerbuam</span>
+      <span class="brand-sub" id="live-pill" hidden><span class="dot" aria-label="Abend läuft"></span><span class="lbl">Abend läuft</span></span>
+    </div>
+    <button class="me-chip" id="me-chip" type="button" aria-label="Wer bist du?">?</button>
+  </header>
+
+  <main id="view" class="view" aria-live="polite">
+    <div class="loading">Lade die Stube …</div>
+  </main>
+
+  <nav class="tabbar" id="tabbar">
+    <button data-tab="abend" class="active"><span class="ti">🍺</span><span>Abend</span></button>
+    <button data-tab="stoppuhr"><span class="ti">⏱️</span><span>Exen</span></button>
+    <button data-tab="rangliste"><span class="ti">🏆</span><span>Rangliste</span></button>
+    <button data-tab="rueckblick"><span class="ti">📜</span><span>Rückblick</span></button>
+    <button data-tab="crew"><span class="ti">🤠</span><span>Crew</span></button>
+  </nav>
+
+  <div class="sheet-wrap" id="sheet" hidden>
+    <div class="sheet-backdrop" data-close></div>
+    <div class="sheet" role="dialog" aria-modal="true"><div id="sheet-body"></div></div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
