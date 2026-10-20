@@ -119,4 +119,3 @@ grant execute on function bbb_add_player(uuid, text, text, text) to anon, authen
 grant execute on function bbb_update_player(uuid, text, uuid, text, text, text, text, boolean) to anon, authenticated;
 grant execute on function bbb_delete(uuid, text, text, uuid) to anon, authenticated;
 
-notify pgrst, 'reload schema';
