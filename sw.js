@@ -1,6 +1,6 @@
 // Service Worker: lädt die App schnell und zeigt sie auch bei schlechtem Netz an.
 // Daten kommen immer live aus der Datenbank.
-const CACHE = "bbb-v1";
+const CACHE = "bbb-v2";
 const SHELL = ["./", "index.html", "styles.css", "app.js", "config.js", "manifest.webmanifest", "icons/icon-192.png", "icons/apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {

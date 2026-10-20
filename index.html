@@ -15,7 +15,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Grenze+Gotisch:wght@600;800&family=Manrope:wght@400;600;700;800&family=DM+Mono:wght@500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=2">
 </head>
 <body>
   <header class="topbar">
@@ -23,19 +23,19 @@
       <span class="brand-mark">Bergbauerbuam</span>
       <span class="brand-sub" id="live-pill" hidden><span class="dot" aria-label="Abend läuft"></span><span class="lbl">Abend läuft</span></span>
     </div>
-    <button class="me-chip" id="me-chip" type="button" aria-label="Wer bist du?">?</button>
+    <button class="me-chip" id="me-chip" type="button" aria-label="Mein Profil" hidden></button>
   </header>
 
   <main id="view" class="view" aria-live="polite">
     <div class="loading">Lade die Stube …</div>
   </main>
 
-  <nav class="tabbar" id="tabbar">
+  <nav class="tabbar" id="tabbar" hidden>
     <button data-tab="abend" class="active"><span class="ti">🍺</span><span>Abend</span></button>
-    <button data-tab="stoppuhr"><span class="ti">⏱️</span><span>Exen</span></button>
-    <button data-tab="rangliste"><span class="ti">🏆</span><span>Rangliste</span></button>
-    <button data-tab="rueckblick"><span class="ti">📜</span><span>Rückblick</span></button>
-    <button data-tab="crew"><span class="ti">🤠</span><span>Crew</span></button>
+    <button data-tab="exen"><span class="ti">⏱️</span><span>Exen</span></button>
+    <button data-tab="spiele"><span class="ti">🃏</span><span>Spiele</span></button>
+    <button data-tab="stats"><span class="ti">🏆</span><span>Stats</span></button>
+    <button data-tab="profil"><span class="ti">👤</span><span>Profil</span></button>
   </nav>
 
   <div class="sheet-wrap" id="sheet" hidden>
@@ -47,6 +47,6 @@
 
   <script src="config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=2"></script>
 </body>
 </html>

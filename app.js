@@ -17,23 +17,27 @@
     { id: "lvp", label: "LVP", emoji: "🪦" },
   ];
   const COLORS = ["#f2b632", "#6aa6ec", "#ef5b5b", "#5fcf8a", "#c58cf2", "#f28f4b", "#4fd1c5", "#f06fb0"];
-
-  const cfg = window.BBB_CONFIG || {};
-  const sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseKey);
+  const PLAYER_COLS = "id,name,color,emoji,active,created_at,avatar,is_admin,claimed";
+  const FRESH_MS = 10 * 60 * 1000;
 
   const store = {
     get(k) { try { return localStorage.getItem(k); } catch { return null; } },
     set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} },
   };
 
+  const cfg = window.BBB_CONFIG || {};
+  const sb = window.supabase.createClient(cfg.supabaseUrl, cfg.supabaseKey);
+
   // ---------- Zustand ----------
   const S = {
-    tab: "abend",
+    tab: store.get("bbb_tab") || "abend",
     players: [], evenings: [], drinks: [], chugs: [], departures: [], pukes: [], votes: [],
     loaded: false, error: null,
-    me: store.get("bbb_me"),
-    watch: { player: store.get("bbb_watch_player"), kind: store.get("bbb_watch_kind") || "halbe", running: false, start: 0, elapsed: 0, result: null, raf: 0 },
-    rankKind: "halbe",
+    me: store.get("bbb_me"), pin: store.get("bbb_pin"), authed: false, authChecked: false,
+    watch: { player: store.get("bbb_watch_player"), kind: store.get("bbb_watch_kind") || "halbe", running: false, start: 0, result: null, raf: 0 },
+    rankKind: "halbe", statsView: "ranglisten",
+    game: null, g: {},
+    openEvening: null,
   };
 
   // ---------- Helfer ----------
@@ -41,6 +45,8 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const byId = (arr, id) => arr.find((x) => x.id === id);
   const player = (id) => byId(S.players, id);
+  const me = () => (S.authed ? player(S.me) : null);
+  const isAdmin = () => !!me()?.is_admin;
   const fmtTime = (iso) => new Date(iso).toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit" });
   const fmtDate = (iso, o) => new Date(iso).toLocaleDateString("de-DE", o || { weekday: "short", day: "numeric", month: "short" });
   const fmtMs = (ms) => {
@@ -50,17 +56,21 @@
     return m + ":" + (s - m * 60).toFixed(2).padStart(5, "0").replace(".", ",") + " min";
   };
   const fmtL = (l) => l.toFixed(l < 10 ? 2 : 1).replace(".", ",") + " l";
-  const fmtDur = (ms) => {
-    const m = Math.max(0, Math.round(ms / 60000));
-    return Math.floor(m / 60) + " h " + String(m % 60).padStart(2, "0") + " min";
-  };
-  // Minuten seit 12 Uhr mittags – damit 01:30 nach 23:00 kommt
+  const fmtDur = (ms) => { const m = Math.max(0, Math.round(ms / 60000)); return Math.floor(m / 60) + " h " + String(m % 60).padStart(2, "0") + " min"; };
   const nightMin = (iso) => { const d = new Date(iso); return ((d.getHours() + 12) % 24) * 60 + d.getMinutes(); };
   const nightMinToClock = (m) => { const mm = Math.round(m); const h = (Math.floor(mm / 60) + 12) % 24; return String(h).padStart(2, "0") + ":" + String(mm % 60).padStart(2, "0"); };
-  const initial = (p) => (p?.emoji || (p?.name || "?").trim().charAt(0).toUpperCase());
-  const avatar = (p) => `<span class="avatar" style="--pc:${esc(p?.color || "#888")}">${esc(initial(p))}</span>`;
+  const initial = (p) => p?.emoji || (p?.name || "?").trim().charAt(0).toUpperCase();
+  const avatar = (p, size) => {
+    const st = `--pc:${esc(p?.color || "#888")}${size ? `;width:${size}px;height:${size}px;font-size:${Math.round(size * 0.45)}px` : ""}`;
+    return p?.avatar
+      ? `<span class="avatar img" style="${st}"><img src="${esc(p.avatar)}" alt=""></span>`
+      : `<span class="avatar" style="${st}">${esc(initial(p))}</span>`;
+  };
   const activePlayers = () => S.players.filter((p) => p.active);
   const currentEvening = () => S.evenings.filter((e) => !e.ended_at).sort((a, b) => b.started_at.localeCompare(a.started_at))[0] || null;
+  const evName = (ev) => ev.title || fmtDate(ev.started_at, { weekday: "long" }) + "abend";
+  const shuffle = (a) => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  const pick = (a) => a[Math.floor(Math.random() * a.length)];
 
   function toast(msg, undo) {
     const t = $("#toast");
@@ -71,13 +81,14 @@
     toast._t = setTimeout(() => (t.hidden = true), undo ? 5000 : 2600);
   }
   function buzz(ms = 15) { try { navigator.vibrate && navigator.vibrate(ms); } catch {} }
+  function errMsg(e) { return (e && (e.message || e.details)) || "Unbekannter Fehler"; }
 
   // ---------- Daten ----------
   const TABLES = ["players", "evenings", "drinks", "chugs", "departures", "pukes", "votes"];
   async function fetchAll(table) {
     const out = [];
     for (let from = 0; ; from += 1000) {
-      const { data, error } = await sb.from(table).select("*").order("created_at", { ascending: true }).range(from, from + 999);
+      const { data, error } = await sb.from(table).select(table === "players" ? PLAYER_COLS : "*").order("created_at", { ascending: true }).range(from, from + 999);
       if (error) throw error;
       out.push(...data);
       if (data.length < 1000) return out;
@@ -91,9 +102,10 @@
         const res = await Promise.all(TABLES.map(fetchAll));
         TABLES.forEach((t, i) => (S[t] = res[i]));
         S.loaded = true; S.error = null;
+        if (!S.authChecked) await checkAuth();
       } catch (e) {
         console.error(e);
-        S.error = e.message || String(e);
+        S.error = errMsg(e);
       }
       loading = null;
       if (loadAll.again) { loadAll.again = false; return loadAll(); }
@@ -104,10 +116,26 @@
   let reloadT;
   const scheduleReload = () => { clearTimeout(reloadT); reloadT = setTimeout(loadAll, 350); };
 
+  async function checkAuth() {
+    S.authChecked = true;
+    if (!S.me || !S.pin || !player(S.me)) { S.authed = false; return; }
+    const { data, error } = await sb.rpc("bbb_check", { p_player: S.me, p_pin: S.pin });
+    S.authed = !error && data === true;
+    if (!S.authed) logout(true);
+  }
+  function logout(silent) {
+    S.authed = false; S.pin = null;
+    store.set("bbb_pin", null);
+    if (!silent) { S.me = null; store.set("bbb_me", null); }
+  }
+
   async function db(op) {
     const { data, error } = await op;
-    if (error) { console.error(error); toast("Hat nicht geklappt: " + (error.message || "Fehler")); throw error; }
+    if (error) { console.error(error); toast(errMsg(error)); throw error; }
     return data;
+  }
+  async function rpc(fn, args) {
+    return db(sb.rpc(fn, Object.assign({ p_player: S.me, p_pin: S.pin }, args || {})));
   }
   async function insert(table, row) {
     const data = await db(sb.from(table).insert(row).select().single());
@@ -116,15 +144,25 @@
     return data;
   }
   async function remove(table, id) {
+    const before = S[table];
     S[table] = S[table].filter((r) => r.id !== id);
     render();
-    await db(sb.from(table).delete().eq("id", id));
+    try { await rpc("bbb_delete", { p_table: table, p_id: id }); }
+    catch (e) { S[table] = before; render(); throw e; }
   }
   async function patch(table, id, fields) {
     const row = byId(S[table], id);
     if (row) Object.assign(row, fields);
     render();
     await db(sb.from(table).update(fields).eq("id", id));
+  }
+  function canDelete(table, row) {
+    if (!row || !S.authed) return false;
+    if (isAdmin()) return true;
+    if (table === "evenings") return false;
+    if (table === "departures") return true;
+    if (table === "votes") return row.voter_id === S.me;
+    return Date.now() - new Date(row.created_at).getTime() < FRESH_MS;
   }
 
   // ---------- Statistik ----------
@@ -157,42 +195,79 @@
     S.chugs.filter((c) => c.kind === kind).forEach((c) => { if (!best[c.player_id] || c.ms < best[c.player_id].ms) best[c.player_id] = c; });
     return Object.values(best).filter((c) => player(c.player_id)).sort((a, b) => a.ms - b.ms);
   }
+  function playerTotals(id) {
+    const ds = S.drinks.filter((d) => d.player_id === id);
+    const titles = {};
+    S.evenings.forEach((ev) => VOTE_CATS.forEach((c) => { if (voteWinners(ev.id, c.id).winners.includes(id)) titles[c.id] = (titles[c.id] || 0) + 1; }));
+    const best = {};
+    CHUG_KEYS.forEach((k) => { const b = bestChugs(k).find((c) => c.player_id === id); if (b) best[k] = b.ms; });
+    const evs = new Set(); ["drinks", "chugs", "departures", "pukes"].forEach((t) => S[t].forEach((r) => r.player_id === id && r.evening_id && evs.add(r.evening_id)));
+    return { n: ds.length, l: ds.reduce((s, d) => s + (DRINKS[d.kind]?.liters || 0), 0), pukes: S.pukes.filter((x) => x.player_id === id).length, titles, best, evenings: evs.size };
+  }
 
   // ---------- Render ----------
   function render() {
-    renderMe();
-    $("#live-pill").hidden = !currentEvening();
-    document.querySelectorAll("#tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));
+    renderHeader();
+    const tabbar = $("#tabbar");
     const v = $("#view");
     if (!S.loaded) {
+      tabbar.hidden = true;
       v.innerHTML = S.error
-        ? `<div class="card"><h3>Keine Verbindung</h3><p class="muted">${esc(S.error)}</p><button class="btn gold block" data-act="reload">Nochmal versuchen</button></div>`
+        ? `<div class="card section"><h3>Keine Verbindung</h3><p class="muted" style="margin:0">${esc(S.error)}</p><button class="btn gold block" data-act="reload">Nochmal versuchen</button></div>`
         : `<div class="loading">Lade die Stube …</div>`;
       return;
     }
-    if (S.tab !== "stoppuhr") stopRaf();
-    const html = { abend: viewAbend, stoppuhr: viewWatch, rangliste: viewRank, rueckblick: viewBack, crew: viewCrew }[S.tab]();
-    v.innerHTML = html;
-    if (S.tab === "stoppuhr") paintWatch();
+    if (!S.authed) { tabbar.hidden = true; v.innerHTML = viewLogin(); return; }
+    tabbar.hidden = false;
+    document.querySelectorAll("#tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === S.tab));
+    if (S.tab !== "exen") stopRaf();
+    const views = { abend: viewAbend, exen: viewWatch, spiele: viewGames, stats: viewStats, profil: viewProfile };
+    v.innerHTML = (views[S.tab] || viewAbend)();
+    if (S.tab === "exen") paintWatch();
+    if (S.tab === "spiele" && S.game === "rad") drawWheel();
+    if (S.openEvening && !$("#sheet").hidden) openEvening(S.openEvening, true);
   }
-  function renderMe() {
-    const p = player(S.me);
+  function renderHeader() {
+    $("#live-pill").hidden = !(S.authed && currentEvening());
     const c = $("#me-chip");
-    c.innerHTML = p ? `${avatar(p).replace('class="avatar"', 'class="avatar" style="width:26px;height:26px;font-size:12px;--pc:' + esc(p.color) + '"')}<span>${esc(p.name)}</span>` : "Wer bist du?";
+    const p = me();
+    c.hidden = !p;
+    if (p) c.innerHTML = `${avatar(p, 26)}<span>${esc(p.name)}</span>${p.is_admin ? '<span class="crown" title="Admin">★</span>' : ""}`;
+  }
+
+  // --- Anmelden ---
+  function viewLogin() {
+    const ps = activePlayers();
+    return `
+      <div class="login">
+        <img class="login-icon" src="icons/icon-192.png" alt="">
+        <h2>Servus! Wer bist du?</h2>
+        <p class="muted" style="margin:0">Tipp auf deinen Namen. Beim ersten Mal wählst du eine 4-stellige PIN, damit nur du dein Profil benutzen kannst.</p>
+        <div class="login-grid">
+          ${ps.map((p) => `<button class="login-p" data-act="login-pick" data-p="${p.id}">${avatar(p, 64)}<b>${esc(p.name)}</b><span class="muted small">${p.claimed ? "PIN eingeben" : "Noch frei"}</span></button>`).join("") || `<div class="empty">Noch keine Spieler angelegt.</div>`}
+        </div>
+      </div>`;
+  }
+  function loginSheet(id) {
+    const p = player(id);
+    openSheet(`
+      <div class="sheet-head">${avatar(p, 56)}<div><h2>${esc(p.name)}</h2><div class="muted small">${p.claimed ? "Gib deine PIN ein" : "Wähle eine 4-stellige PIN für dein Profil"}</div></div></div>
+      <div class="field"><label for="pin">${p.claimed ? "PIN" : "Neue PIN"}</label><input class="input pin" id="pin" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="one-time-code" placeholder="••••"></div>
+      ${p.claimed ? "" : `<p class="muted small" style="margin:0">Merk sie dir gut. Falls du sie vergisst, kann Georg sie zurücksetzen.</p>`}
+      <button class="btn gold block" data-act="login-go" data-p="${p.id}">${p.claimed ? "Anmelden" : "Das bin ich"}</button>
+      <button class="btn ghost block" data-act="close">Abbrechen</button>`);
+    setTimeout(() => $("#pin")?.focus(), 80);
   }
 
   // --- Abend ---
   function viewAbend() {
     const ev = currentEvening();
-    if (!activePlayers().length) {
-      return `<div class="hero"><h2>Servus, Buam!</h2><p class="muted">Legt zuerst eure Crew an. Dann kann der erste Abend starten.</p><button class="btn gold block" data-act="goto" data-tab="crew">Crew anlegen</button></div>`;
-    }
     if (!ev) {
       const last = S.evenings.filter((e) => e.ended_at).sort((a, b) => b.started_at.localeCompare(a.started_at))[0];
       return `
         <div class="hero">
           <div><h2>Heid geht wos?</h2><p class="muted" style="margin:6px 0 0">Starte den Abend, dann zählt die App jedes Bier, jeden Heimgang und jeden Kotzer.</p></div>
-          <div class="field"><label for="ev-title">Wo seid ihr? (optional)</label><input class="input" id="ev-title" placeholder="z. B. Garage bei Max, Club, Stammtisch" maxlength="60"></div>
+          <div class="field"><label for="ev-title">Wo seid ihr? (optional)</label><input class="input" id="ev-title" placeholder="z. B. Garage, Club, Stammtisch" maxlength="60"></div>
           <button class="btn gold block" data-act="start-evening">🍺 Abend starten</button>
         </div>
         ${last ? `<div class="section"><h3>Letzter Abend</h3>${eveningItem(last)}</div>` : ""}`;
@@ -200,16 +275,12 @@
     const st = eveningStats(ev);
     const gone = new Map(st.departures.map((d) => [d.player_id, d]));
     const here = activePlayers().filter((p) => !gone.has(p.id)).length;
-    const cards = activePlayers()
-      .slice()
-      .sort((a, b) => (gone.has(a.id) - gone.has(b.id)))
-      .map((p) => playerCard(p, ev, st, gone.get(p.id)))
-      .join("");
+    const ordered = activePlayers().slice().sort((a, b) => (gone.has(a.id) - gone.has(b.id)) || (b.id === S.me) - (a.id === S.me));
     return `
       <div class="hero">
         <div class="hero-row">
-          <div style="min-width:0"><h2>${esc(ev.title || fmtDate(ev.started_at, { weekday: "long" }) + "abend")}</h2>
-          <div class="muted small">seit ${fmtTime(ev.started_at)} Uhr · ${fmtDur(st.duration)}</div></div>
+          <div style="min-width:0"><h2>${esc(evName(ev))}</h2><div class="muted small">seit ${fmtTime(ev.started_at)} Uhr · ${fmtDur(st.duration)}</div></div>
+          <button class="btn sm ghost" data-act="open-evening" data-id="${ev.id}">Verlauf</button>
         </div>
         <div class="big-stats">
           <div class="stat"><b>${st.drinks.length}</b><span>Getränke</span></div>
@@ -217,11 +288,11 @@
           <div class="stat"><b>${here}/${activePlayers().length}</b><span>Noch da</span></div>
         </div>
       </div>
-      <div class="players">${cards}</div>
+      <div class="players">${ordered.map((p) => playerCard(p, st, gone.get(p.id))).join("")}</div>
       ${voteBlock(ev)}
       <button class="btn ghost block" data-act="end-evening">Abend beenden</button>`;
   }
-  function playerCard(p, ev, st, dep) {
+  function playerCard(p, st, dep) {
     const mine = st.drinks.filter((d) => d.player_id === p.id);
     const liters = mine.reduce((s, d) => s + DRINKS[d.kind].liters, 0);
     const pukes = st.pukes.filter((x) => x.player_id === p.id).length;
@@ -236,7 +307,7 @@
         <div class="phead">
           ${avatar(p)}
           <div style="min-width:0">
-            <div class="pname">${esc(p.name)}</div>
+            <div class="pname">${esc(p.name)}${p.id === S.me ? ' <span class="badge gold">Du</span>' : ""}</div>
             <div class="pmeta">${fmtL(liters)}${pukes ? ` · <span class="badge">🤮 ${pukes}</span>` : ""}${dep ? ` · <span class="badge home">🏠 ${fmtTime(dep.left_at)}</span>` : ""}</div>
           </div>
           <div class="pcount"><b>${mine.length}</b><span>Getränke</span></div>
@@ -249,43 +320,44 @@
       </div>`;
   }
   function voteBlock(ev) {
-    const me = player(S.me);
     const opts = activePlayers();
     const cats = VOTE_CATS.map((c) => {
       const { counts, winners } = voteWinners(ev.id, c.id);
       const my = S.votes.find((v) => v.evening_id === ev.id && v.category === c.id && v.voter_id === S.me);
       return `<div class="vote-cat">
         <div class="vote-title"><span>${c.emoji}</span><span>${c.label}</span>${winners.length ? `<span class="badge gold" style="margin-left:auto">${winners.map((w) => esc(player(w)?.name)).join(" & ")}</span>` : ""}</div>
-        <div class="vote-opts">${opts.map((p) => `<button class="vopt ${my?.target_id === p.id ? "mine" : ""}" data-act="vote" data-ev="${ev.id}" data-c="${c.id}" data-p="${p.id}">${esc(p.name)}${counts[p.id] ? `<span class="vc">${counts[p.id]}</span>` : ""}</button>`).join("")}</div>
+        <div class="vote-opts">${opts.map((p) => `<button class="vopt ${my?.target_id === p.id ? "mine" : ""}" data-act="vote" data-ev="${ev.id}" data-c="${c.id}" data-p="${p.id}">${avatar(p, 22)}${esc(p.name)}${counts[p.id] ? `<span class="vc">${counts[p.id]}</span>` : ""}</button>`).join("")}</div>
       </div>`;
     }).join("");
-    return `<div class="card section">
-      <div class="section-head"><h3>Abstimmung</h3><span class="muted small">${me ? "Du stimmst als " + esc(me.name) : "Erst oben „Wer bist du?“ wählen"}</span></div>
-      ${cats}
-    </div>`;
+    return `<div class="card section"><div class="section-head"><h3>Abstimmung</h3><span class="muted small">Nochmal tippen nimmt die Stimme zurück</span></div>${cats}</div>`;
   }
 
-  // --- Stoppuhr ---
+  // --- Exen ---
   function viewWatch() {
     const w = S.watch;
-    if (!player(w.player) || !player(w.player).active) w.player = S.me && player(S.me)?.active ? S.me : activePlayers()[0]?.id || null;
-    if (!activePlayers().length) return `<div class="hero"><h2>Exen</h2><p class="muted">Leg zuerst die Crew an.</p><button class="btn gold block" data-act="goto" data-tab="crew">Crew anlegen</button></div>`;
+    if (!player(w.player) || !player(w.player).active) w.player = S.me;
     const best = bestChugs(w.kind);
     const rec = best[0];
     const pb = best.find((c) => c.player_id === w.player);
+    const all = S.chugs.filter((c) => c.kind === w.kind && player(c.player_id)).sort((a, b) => b.created_at.localeCompare(a.created_at)).slice(0, 15);
     return `
       <div class="section">
-        <div class="seg" role="tablist">${CHUG_KEYS.map((k) => `<button class="${w.kind === k ? "on" : ""}" data-act="wkind" data-k="${k}">${DRINKS[k].emoji} ${DRINKS[k].label} ${DRINKS[k].size}</button>`).join("")}</div>
-        <div class="chips">${activePlayers().map((p) => `<button class="chip ${w.player === p.id ? "on" : ""}" style="--pc:${esc(p.color)}" data-act="wplayer" data-p="${p.id}">${avatar(p)}${esc(p.name)}</button>`).join("")}</div>
+        <div class="seg">${CHUG_KEYS.map((k) => `<button class="${w.kind === k ? "on" : ""}" data-act="wkind" data-k="${k}">${DRINKS[k].emoji} ${DRINKS[k].label} ${DRINKS[k].size}</button>`).join("")}</div>
+        <div class="chips">${activePlayers().map((p) => `<button class="chip ${w.player === p.id ? "on" : ""}" style="--pc:${esc(p.color)}" data-act="wplayer" data-p="${p.id}">${avatar(p, 28)}${esc(p.name)}</button>`).join("")}</div>
       </div>
       <div class="card watch">
         <div class="time num" id="w-time">0,00<small> s</small></div>
-        <div class="muted small" id="w-sub">${rec ? `Rekord: ${fmtMs(rec.ms)} (${esc(player(rec.player_id)?.name)})` : "Noch kein Rekord – setz den ersten!"}${pb ? ` · Deine Bestzeit: ${fmtMs(pb.ms)}` : ""}</div>
+        <div class="muted small" style="text-align:center">${rec ? `Rekord: ${fmtMs(rec.ms)} (${esc(player(rec.player_id)?.name)})` : "Noch kein Rekord – setz den ersten!"}${pb ? ` · Bestzeit ${esc(player(w.player)?.name)}: ${fmtMs(pb.ms)}` : ""}</div>
         <div id="w-controls"></div>
       </div>
       <div class="card section">
         <h3>Top 5 · ${DRINKS[w.kind].label} ${DRINKS[w.kind].size}</h3>
         ${rankList(best.slice(0, 5).map((c) => ({ p: player(c.player_id), val: fmtMs(c.ms) })))}
+      </div>
+      <div class="card section">
+        <div class="section-head"><h3>Letzte Versuche</h3>${isAdmin() ? '<span class="badge gold">Admin</span>' : ""}</div>
+        ${all.length ? `<div class="list">${all.map((c) => `<div class="li">${avatar(player(c.player_id), 30)}<div class="grow"><b>${esc(player(c.player_id).name)}</b><span class="muted small">${fmtDate(c.created_at)} · ${fmtTime(c.created_at)}</span></div><span class="val">${fmtMs(c.ms)}</span>${canDelete("chugs", c) ? `<button class="icon-btn" data-act="del" data-t="chugs" data-id="${c.id}" aria-label="Löschen">✕</button>` : ""}</div>`).join("")}</div>` : `<div class="empty">Noch keine Versuche.</div>`}
+        ${isAdmin() ? "" : `<div class="muted small">Eigene Fehleinträge kannst du 10 Minuten lang löschen, danach nur Georg.</div>`}
       </div>`;
   }
   function paintWatch() {
@@ -310,12 +382,7 @@
     const s = ms / 1000;
     el.innerHTML = s < 60 ? `${s.toFixed(2).replace(".", ",")}<small> s</small>` : `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0").replace(".", ",")}<small> min</small>`;
   }
-  function tick() {
-    const w = S.watch;
-    stopRaf();
-    const loop = () => { setTime(performance.now() - w.start); w.raf = requestAnimationFrame(loop); };
-    loop();
-  }
+  function tick() { const w = S.watch; stopRaf(); const loop = () => { setTime(performance.now() - w.start); w.raf = requestAnimationFrame(loop); }; loop(); }
   function stopRaf() { if (S.watch.raf) cancelAnimationFrame(S.watch.raf); S.watch.raf = 0; }
   let wakeLock = null;
   async function keepAwake(on) {
@@ -325,27 +392,29 @@
     } catch {}
   }
 
-  // --- Rangliste ---
+  // --- Stats ---
   function rankList(rows) {
     if (!rows.length) return `<div class="empty">Noch keine Einträge.</div>`;
-    return `<div class="list">${rows.map((r, i) => `<div class="li"><span class="rank ${i === 0 ? "r1" : ""}">${i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}</span>${avatar(r.p)}<div class="grow"><b>${esc(r.p?.name)}</b>${r.sub ? `<span class="muted small">${r.sub}</span>` : ""}</div><span class="val">${r.val}</span></div>`).join("")}</div>`;
+    return `<div class="list">${rows.map((r, i) => `<div class="li"><span class="rank ${i === 0 ? "r1" : ""}">${i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : i + 1}</span>${avatar(r.p, 32)}<div class="grow"><b>${esc(r.p?.name)}</b>${r.sub ? `<span class="muted small">${r.sub}</span>` : ""}</div><span class="val">${r.val}</span></div>`).join("")}</div>`;
+  }
+  function viewStats() {
+    return `
+      <div class="seg big">
+        <button class="${S.statsView === "ranglisten" ? "on" : ""}" data-act="stats-view" data-v="ranglisten">🏆 Ranglisten</button>
+        <button class="${S.statsView === "abende" ? "on" : ""}" data-act="stats-view" data-v="abende">📜 Abende</button>
+      </div>
+      ${S.statsView === "abende" ? viewBack() : viewRank()}`;
   }
   function viewRank() {
     const k = S.rankKind;
     const best = bestChugs(k);
-    // Getränke & Liter gesamt
     const tot = {};
     S.drinks.forEach((d) => { const t = (tot[d.player_id] ||= { n: 0, l: 0 }); t.n++; t.l += DRINKS[d.kind]?.liters || 0; });
-    const drinkRows = Object.entries(tot).filter(([id]) => player(id)).sort((a, b) => b[1].l - a[1].l)
-      .map(([id, t]) => ({ p: player(id), val: fmtL(t.l), sub: `${t.n} Getränke` }));
-    // Kotz-Counter
+    const drinkRows = Object.entries(tot).filter(([id]) => player(id)).sort((a, b) => b[1].l - a[1].l).map(([id, t]) => ({ p: player(id), val: fmtL(t.l), sub: `${t.n} Getränke` }));
     const pk = {};
     S.pukes.forEach((x) => (pk[x.player_id] = (pk[x.player_id] || 0) + 1));
     const pukeRows = Object.entries(pk).filter(([id]) => player(id)).sort((a, b) => b[1] - a[1]).map(([id, n]) => ({ p: player(id), val: `${n} × 🤮` }));
-    // Heimgehen
-    const dep = {};
-    const lastMan = {};
-    const firstOut = {};
+    const dep = {}, lastMan = {}, firstOut = {};
     S.evenings.filter((e) => e.ended_at).forEach((ev) => {
       const st = eveningStats(ev);
       if (st.players.length < 2) return;
@@ -353,25 +422,21 @@
       const stayEnd = nightMin(ev.ended_at);
       const times = st.players.map((p) => ({ id: p.id, t: leftAt.has(p.id) ? leftAt.get(p.id) : stayEnd }));
       times.forEach((x) => { const d = (dep[x.id] ||= { sum: 0, n: 0 }); d.sum += x.t; d.n++; });
-      const max = Math.max(...times.map((x) => x.t));
-      const min = Math.min(...times.map((x) => x.t));
+      const max = Math.max(...times.map((x) => x.t)), min = Math.min(...times.map((x) => x.t));
       if (max !== min) {
         times.filter((x) => x.t === max).forEach((x) => (lastMan[x.id] = (lastMan[x.id] || 0) + 1));
         times.filter((x) => x.t === min).forEach((x) => (firstOut[x.id] = (firstOut[x.id] || 0) + 1));
       }
     });
     const depRows = Object.entries(dep).filter(([id]) => player(id)).sort((a, b) => a[1].sum / a[1].n - b[1].sum / b[1].n)
-      .map(([id, d]) => ({ p: player(id), val: "Ø " + nightMinToClock(d.sum / d.n), sub: `${firstOut[id] || 0}× als Erster heim · ${lastMan[id] || 0}× Letzter Mann` }));
-    // Titel aus Abstimmungen
+      .map(([id, d]) => ({ p: player(id), val: "Ø " + nightMinToClock(d.sum / d.n), sub: `${firstOut[id] || 0}× Erster heim · ${lastMan[id] || 0}× Letzter Mann` }));
     const titles = {};
     S.evenings.forEach((ev) => VOTE_CATS.forEach((c) => voteWinners(ev.id, c.id).winners.forEach((w) => { (titles[w] ||= {})[c.id] = (titles[w][c.id] || 0) + 1; })));
     const titleBlock = VOTE_CATS.map((c) => {
       const rows = Object.entries(titles).filter(([id, t]) => player(id) && t[c.id]).sort((a, b) => b[1][c.id] - a[1][c.id]).map(([id, t]) => ({ p: player(id), val: `${t[c.id]}×` }));
-      return `<div class="card section"><h3>${c.emoji} ${c.label} – Titel</h3>${rankList(rows)}</div>`;
+      return `<div class="card section"><h3>${c.emoji} ${c.label}: meiste Titel</h3>${rankList(rows)}</div>`;
     }).join("");
-
     return `
-      <h2>Rangliste</h2>
       <div class="card section">
         <h3>⏱️ Schnellstes Exen</h3>
         <div class="seg">${CHUG_KEYS.map((x) => `<button class="${k === x ? "on" : ""}" data-act="rkind" data-k="${x}">${DRINKS[x].label} ${DRINKS[x].size}</button>`).join("")}</div>
@@ -379,18 +444,16 @@
       </div>
       <div class="card section"><h3>🍺 Ewige Trinker-Tabelle</h3>${rankList(drinkRows)}</div>
       <div class="card section"><h3>🤮 Kotz-Counter</h3>${rankList(pukeRows)}</div>
-      <div class="card section"><h3>🏠 Wer geht am frühesten?</h3>${rankList(depRows)}<div class="muted small">Zählt nur beendete Abende. Wer nicht heimgegangen ist, gilt bis Abend-Ende als da.</div></div>
+      <div class="card section"><h3>🏠 Wer geht am frühesten heim?</h3>${rankList(depRows)}<div class="muted small">Zählt nur beendete Abende. Wer sich nicht abmeldet, gilt bis zum Abend-Ende als da.</div></div>
       ${titleBlock}`;
   }
-
-  // --- Rückblick ---
   function eveningItem(ev) {
     const st = eveningStats(ev);
     const d = new Date(ev.started_at);
     const mvp = voteWinners(ev.id, "mvp").winners.map((w) => player(w)?.name).filter(Boolean);
     return `<button class="evening-item" data-act="open-evening" data-id="${ev.id}">
       <div class="date"><b>${d.getDate()}</b><span>${d.toLocaleDateString("de-DE", { month: "short" }).replace(".", "")}</span></div>
-      <div style="min-width:0;flex:1"><b style="display:block">${esc(ev.title || fmtDate(ev.started_at, { weekday: "long" }) + "abend")}</b>
+      <div style="min-width:0;flex:1"><b style="display:block">${esc(evName(ev))}${ev.ended_at ? "" : ' <span class="badge home">läuft</span>'}</b>
       <span class="muted small">${st.drinks.length} Getränke · ${fmtL(st.liters)}${st.pukes.length ? ` · 🤮 ${st.pukes.length}` : ""}${mvp.length ? ` · 👑 ${esc(mvp.join(" & "))}` : ""}</span></div>
       <span class="muted">›</span></button>`;
   }
@@ -401,7 +464,6 @@
     const year = new Date().getFullYear();
     const yearEvs = evs.filter((e) => new Date(e.started_at).getFullYear() === year);
     return `
-      <h2>Rückblick</h2>
       <div class="hero">
         <h3>Gesamtbilanz</h3>
         <div class="big-stats">
@@ -413,24 +475,24 @@
       </div>
       <div class="section">${evs.length ? evs.map(eveningItem).join("") : `<div class="empty">Noch kein Abend. Starte im Tab „Abend“ den ersten.</div>`}</div>`;
   }
-  function openEvening(id) {
+  function openEvening(id, keepScroll) {
     const ev = byId(S.evenings, id);
-    if (!ev) return;
+    if (!ev) return closeSheet();
     const st = eveningStats(ev);
-    const per = st.players.map((p) => {
-      const ds = st.drinks.filter((d) => d.player_id === p.id);
-      return { p, n: ds.length, l: ds.reduce((s, d) => s + DRINKS[d.kind].liters, 0) };
-    }).sort((a, b) => b.l - a.l);
+    const per = st.players.map((p) => { const ds = st.drinks.filter((d) => d.player_id === p.id); return { p, n: ds.length, l: ds.reduce((s, d) => s + DRINKS[d.kind].liters, 0) }; }).sort((a, b) => b.l - a.l);
     const maxL = Math.max(0.01, ...per.map((x) => x.l));
+    const pn = (pid) => esc(player(pid)?.name || "?");
     const timeline = [
       { t: ev.started_at, txt: "Abend gestartet" },
-      ...st.departures.map((d) => ({ t: d.left_at, txt: `🏠 ${esc(player(d.player_id)?.name)} geht heim` })),
-      ...st.pukes.map((x) => ({ t: x.created_at, txt: `🤮 ${esc(player(x.player_id)?.name)} kotzt` })),
-      ...st.chugs.map((c) => ({ t: c.created_at, txt: `⏱️ ${esc(player(c.player_id)?.name)} ext ${DRINKS[c.kind]?.label} in ${fmtMs(c.ms)}` })),
+      ...st.drinks.map((d) => ({ t: d.created_at, txt: `${DRINKS[d.kind]?.emoji} ${pn(d.player_id)}: ${DRINKS[d.kind]?.label}`, table: "drinks", row: d })),
+      ...st.departures.map((d) => ({ t: d.left_at, txt: `🏠 ${pn(d.player_id)} geht heim`, table: "departures", row: d })),
+      ...st.pukes.map((x) => ({ t: x.created_at, txt: `🤮 ${pn(x.player_id)} kotzt`, table: "pukes", row: x })),
+      ...st.chugs.map((c) => ({ t: c.created_at, txt: `⏱️ ${pn(c.player_id)} ext ${DRINKS[c.kind]?.label} in ${fmtMs(c.ms)}`, table: "chugs", row: c })),
       ...(ev.ended_at ? [{ t: ev.ended_at, txt: "Abend beendet" }] : []),
-    ].sort((a, b) => a.t.localeCompare(b.t));
+    ].sort((a, b) => b.t.localeCompare(a.t));
+    const scroll = keepScroll ? $(".sheet").scrollTop : 0;
     openSheet(`
-      <div><h2>${esc(ev.title || fmtDate(ev.started_at, { weekday: "long" }) + "abend")}</h2>
+      <div><h2>${esc(evName(ev))}</h2>
       <div class="muted small">${fmtDate(ev.started_at, { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · ${fmtTime(ev.started_at)}–${ev.ended_at ? fmtTime(ev.ended_at) : "läuft"} · ${fmtDur(st.duration)}</div></div>
       <div class="big-stats">
         <div class="stat"><b>${st.drinks.length}</b><span>Getränke</span></div>
@@ -438,59 +500,340 @@
         <div class="stat"><b>${st.pukes.length}</b><span>Kotzer</span></div>
       </div>
       <div class="section"><h3>Wer hat wie viel</h3>
-        <div class="list">${per.map((x) => `<div class="li">${avatar(x.p)}<div class="grow"><b>${esc(x.p.name)}</b><div class="bar" style="--pc:${esc(x.p.color)}"><i style="width:${(x.l / maxL) * 100}%"></i></div></div><span class="val">${fmtL(x.l)}<br><span class="muted small">${x.n}×</span></span></div>`).join("") || `<div class="empty">Nichts eingetragen.</div>`}</div>
+        <div class="list">${per.map((x) => `<div class="li">${avatar(x.p, 32)}<div class="grow"><b>${esc(x.p.name)}</b><div class="bar" style="--pc:${esc(x.p.color)}"><i style="width:${(x.l / maxL) * 100}%"></i></div></div><span class="val">${fmtL(x.l)}<br><span class="muted small">${x.n}×</span></span></div>`).join("") || `<div class="empty">Nichts eingetragen.</div>`}</div>
       </div>
-      ${voteBlock(ev)}
-      <div class="section"><h3>Verlauf</h3><div class="timeline">${timeline.map((x) => `<div class="tl"><span class="num">${fmtTime(x.t)}</span><span>${x.txt}</span></div>`).join("")}</div></div>
+      ${ev.ended_at ? voteBlock(ev) : ""}
+      <div class="section"><div class="section-head"><h3>Verlauf</h3>${isAdmin() ? '<span class="muted small">✕ löscht einen Eintrag</span>' : ""}</div>
+        <div class="timeline">${timeline.map((x) => `<div class="tl"><span class="num">${fmtTime(x.t)}</span><span class="grow">${x.txt}</span>${x.table && canDelete(x.table, x.row) ? `<button class="icon-btn" data-act="del" data-t="${x.table}" data-id="${x.row.id}" aria-label="Eintrag löschen">✕</button>` : ""}</div>`).join("")}</div>
+      </div>
       <div class="row">
         <button class="btn ghost" data-act="close">Schließen</button>
-        <button class="btn ghost" data-act="del-evening" data-id="${ev.id}" style="color:var(--red)">Abend löschen</button>
+        ${isAdmin() ? `<button class="btn ghost" data-act="del-evening" data-id="${ev.id}" style="color:var(--red)">Abend löschen</button>` : ""}
       </div>`);
     S.openEvening = id;
+    if (keepScroll) $(".sheet").scrollTop = scroll;
   }
 
-  // --- Crew ---
-  function viewCrew() {
-    const ps = S.players.slice().sort((a, b) => (b.active - a.active) || a.name.localeCompare(b.name));
+  // --- Profil & Crew ---
+  function viewProfile() {
+    const p = me();
+    const t = playerTotals(p.id);
+    const titleStr = VOTE_CATS.filter((c) => t.titles[c.id]).map((c) => `${c.emoji} ${t.titles[c.id]}× ${c.label}`).join(" · ");
+    const crew = S.players.slice().sort((a, b) => (b.active - a.active) || a.name.localeCompare(b.name));
     return `
-      <h2>Crew</h2>
-      <div class="card section">
-        <h3>Neuer Bua</h3>
-        <div class="field"><label for="np-name">Name</label><input class="input" id="np-name" maxlength="20" placeholder="Name oder Spitzname"></div>
-        <div class="field"><label>Farbe</label><div class="swatches" id="np-colors">${COLORS.map((c, i) => `<button class="sw ${i === S.players.length % COLORS.length ? "on" : ""}" data-act="pick-color" data-c="${c}" style="background:${c}" aria-label="Farbe ${c}"></button>`).join("")}</div></div>
-        <button class="btn gold block" data-act="add-player">Hinzufügen</button>
+      <div class="profile-hero" style="--pc:${esc(p.color)}">
+        <button class="avatar-edit" data-act="photo" aria-label="Profilbild ändern">${avatar(p, 96)}<span class="cam">📷</span></button>
+        <div style="min-width:0">
+          <h2>${esc(p.name)}</h2>
+          <div class="muted small">${p.is_admin ? '<span class="badge gold">★ Admin</span> ' : ""}${t.evenings} Abende dabei</div>
+        </div>
+      </div>
+      <input type="file" id="photo-input" accept="image/*" hidden>
+      <div class="big-stats">
+        <div class="stat"><b>${t.n}</b><span>Getränke</span></div>
+        <div class="stat"><b>${fmtL(t.l)}</b><span>Liter</span></div>
+        <div class="stat"><b>${t.pukes}</b><span>Kotzer</span></div>
       </div>
       <div class="card section">
-        <h3>Alle (${S.players.length})</h3>
-        <div class="list">${ps.map((p) => `<div class="li" style="${p.active ? "" : "opacity:.5"}">${avatar(p)}<div class="grow"><b>${esc(p.name)}${p.id === S.me ? ' <span class="badge gold">Du</span>' : ""}</b><span class="muted small">${p.active ? "aktiv" : "ausgeblendet"}</span></div><button class="btn sm ghost" data-act="edit-player" data-p="${p.id}">Bearbeiten</button></div>`).join("") || `<div class="empty">Noch niemand.</div>`}</div>
+        <h3>Bestzeiten</h3>
+        <div class="list">${CHUG_KEYS.map((k) => `<div class="li"><span style="font-size:20px">${DRINKS[k].emoji}</span><div class="grow"><b>${DRINKS[k].label} ${DRINKS[k].size}</b></div><span class="val">${t.best[k] ? fmtMs(t.best[k]) : "–"}</span></div>`).join("")}</div>
+        ${titleStr ? `<div class="small">${titleStr}</div>` : ""}
       </div>
       <div class="card section">
-        <h3>📲 Als App installieren</h3>
-        <div class="small"><b>iPhone:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.<br><b>Android:</b> In Chrome öffnen → Menü ⋮ → „App installieren“.</div>
+        <h3>Mein Profil</h3>
+        <div class="settings">
+          <button class="set-row" data-act="edit-player" data-p="${p.id}"><span>✏️</span><span class="grow">Name, Farbe & Emoji</span><span class="muted">›</span></button>
+          <button class="set-row" data-act="photo"><span>📷</span><span class="grow">Profilbild ${p.avatar ? "ändern" : "hinzufügen"}</span><span class="muted">›</span></button>
+          ${p.avatar ? `<button class="set-row" data-act="photo-remove"><span>🗑️</span><span class="grow">Profilbild entfernen</span></button>` : ""}
+          <button class="set-row" data-act="change-pin"><span>🔒</span><span class="grow">PIN ändern</span><span class="muted">›</span></button>
+          <button class="set-row" data-act="logout"><span>🚪</span><span class="grow">Abmelden</span></button>
+        </div>
+      </div>
+      <div class="card section">
+        <div class="section-head"><h3>Crew (${S.players.length})</h3>${isAdmin() ? `<button class="btn sm gold" data-act="add-player-sheet">+ Neuer Bua</button>` : ""}</div>
+        <div class="list">${crew.map((c) => `<div class="li" style="${c.active ? "" : "opacity:.5"}">${avatar(c, 36)}<div class="grow"><b>${esc(c.name)}${c.is_admin ? ' <span class="crown">★</span>' : ""}</b><span class="muted small">${!c.active ? "ausgeblendet" : c.claimed ? "angemeldet" : "noch nicht übernommen"}</span></div>${isAdmin() ? `<button class="btn sm ghost" data-act="edit-player" data-p="${c.id}">Bearbeiten</button>` : ""}</div>`).join("")}</div>
+      </div>
+      <div class="card section">
+        <h3>📲 App teilen & installieren</h3>
+        <div class="small"><b>iPhone:</b> Link in Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.<br><b>Android:</b> In Chrome öffnen → Menü ⋮ → „App installieren“.</div>
         <button class="btn block" data-act="share">🔗 Link kopieren</button>
-      </div>`;
+      </div>
+      <div class="muted small" style="text-align:center">Bergbauerbuam · Version 2</div>`;
   }
   function editPlayer(id) {
     const p = player(id);
     if (!p) return;
+    const self = id === S.me;
     openSheet(`
-      <h2>${esc(p.name)} bearbeiten</h2>
+      <div class="sheet-head">${avatar(p, 56)}<h2>${self ? "Mein Profil" : esc(p.name)}</h2></div>
       <div class="field"><label for="ep-name">Name</label><input class="input" id="ep-name" maxlength="20" value="${esc(p.name)}"></div>
-      <div class="field"><label for="ep-emoji">Emoji statt Buchstabe (optional)</label><input class="input" id="ep-emoji" maxlength="4" value="${esc(p.emoji || "")}" placeholder="z. B. 🐻"></div>
+      <div class="field"><label for="ep-emoji">Emoji statt Buchstabe (wenn kein Bild)</label><input class="input" id="ep-emoji" maxlength="4" value="${esc(p.emoji || "")}" placeholder="z. B. 🐻"></div>
       <div class="field"><label>Farbe</label><div class="swatches" id="ep-colors">${COLORS.map((c) => `<button class="sw ${c === p.color ? "on" : ""}" data-act="pick-color" data-c="${c}" style="background:${c}" aria-label="Farbe ${c}"></button>`).join("")}</div></div>
       <button class="btn gold block" data-act="save-player" data-p="${p.id}">Speichern</button>
-      <button class="btn block" data-act="toggle-player" data-p="${p.id}">${p.active ? "Ausblenden (Statistik bleibt)" : "Wieder aktivieren"}</button>
+      ${isAdmin() && !self ? `
+        <div class="settings">
+          ${p.avatar ? `<button class="set-row" data-act="photo-remove" data-p="${p.id}"><span>🗑️</span><span class="grow">Profilbild entfernen</span></button>` : ""}
+          ${p.claimed ? `<button class="set-row" data-act="reset-pin" data-p="${p.id}"><span>🔓</span><span class="grow">PIN zurücksetzen</span></button>` : ""}
+          <button class="set-row" data-act="toggle-player" data-p="${p.id}"><span>${p.active ? "🙈" : "👀"}</span><span class="grow">${p.active ? "Ausblenden (Statistik bleibt)" : "Wieder aktivieren"}</span></button>
+        </div>` : ""}
       <button class="btn ghost block" data-act="close">Abbrechen</button>`);
   }
-  function pickMe() {
-    const ps = activePlayers();
+  function addPlayerSheet() {
     openSheet(`
-      <h2>Wer bist du?</h2>
-      <p class="muted" style="margin:0">Wird nur auf diesem Handy gespeichert, damit du abstimmen kannst und man sieht, wer was eingetragen hat.</p>
-      <div class="chips">${ps.map((p) => `<button class="chip ${p.id === S.me ? "on" : ""}" style="--pc:${esc(p.color)}" data-act="set-me" data-p="${p.id}">${avatar(p)}${esc(p.name)}</button>`).join("") || `<span class="empty">Erst Crew anlegen.</span>`}</div>
-      ${ps.length ? "" : `<button class="btn gold block" data-act="goto" data-tab="crew">Crew anlegen</button>`}`);
+      <h2>Neuer Bua</h2>
+      <div class="field"><label for="np-name">Name</label><input class="input" id="np-name" maxlength="20" placeholder="Name oder Spitzname"></div>
+      <div class="field"><label>Farbe</label><div class="swatches" id="np-colors">${COLORS.map((c, i) => `<button class="sw ${i === S.players.length % COLORS.length ? "on" : ""}" data-act="pick-color" data-c="${c}" style="background:${c}" aria-label="Farbe ${c}"></button>`).join("")}</div></div>
+      <p class="muted small" style="margin:0">Beim ersten Öffnen wählt er seinen Namen und legt seine eigene PIN fest.</p>
+      <button class="btn gold block" data-act="add-player">Hinzufügen</button>
+      <button class="btn ghost block" data-act="close">Abbrechen</button>`);
   }
+  function changePinSheet() {
+    openSheet(`
+      <h2>PIN ändern</h2>
+      <div class="field"><label for="pin-old">Aktuelle PIN</label><input class="input pin" id="pin-old" inputmode="numeric" maxlength="4"></div>
+      <div class="field"><label for="pin-new">Neue PIN (4 Ziffern)</label><input class="input pin" id="pin-new" inputmode="numeric" maxlength="4"></div>
+      <button class="btn gold block" data-act="save-pin">Speichern</button>
+      <button class="btn ghost block" data-act="close">Abbrechen</button>`);
+  }
+  async function updatePlayer(id, fields) {
+    const p = player(id);
+    const next = Object.assign({ name: p.name, color: p.color, emoji: p.emoji, avatar: p.avatar, active: p.active }, fields);
+    await rpc("bbb_update_player", { p_target: id, p_name: next.name, p_color: next.color, p_emoji: next.emoji || "", p_avatar: next.avatar || null, p_active: next.active });
+    Object.assign(p, next);
+    render();
+  }
+  function resizeImage(file, size = 256) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = c.height = size;
+        const s = Math.min(img.width, img.height);
+        c.getContext("2d").drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+        URL.revokeObjectURL(url);
+        resolve(c.toDataURL("image/jpeg", 0.82));
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Bild konnte nicht gelesen werden")); };
+      img.src = url;
+    });
+  }
+
+  // ---------- Spiele ----------
+  const GAMES = [
+    { id: "ring", name: "Ring of Fire", emoji: "🔥", desc: "Karte ziehen, Regel befolgen. Der 4. König trinkt den Becher." },
+    { id: "bus", name: "Busfahrer", emoji: "🚌", desc: "Vier Fragen richtig, sonst trinken und von vorn." },
+    { id: "eher", name: "Wer würde eher …", emoji: "👉", desc: "Auf 3 zeigen alle auf jemanden. Die meisten Finger trinken." },
+    { id: "nie", name: "Ich hab noch nie …", emoji: "🙊", desc: "Wer es schon gemacht hat, trinkt." },
+    { id: "rad", name: "Glücksrad", emoji: "🎡", desc: "Wer trinkt? Wie viel? Das Rad entscheidet." },
+    { id: "wuerfel", name: "Würfel", emoji: "🎲", desc: "Zwei Würfel für Mäxchen, Schocken & Co." },
+  ];
+  const SUITS = [{ s: "♥", red: true }, { s: "♦", red: true }, { s: "♠", red: false }, { s: "♣", red: false }];
+  const RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "B", "D", "K", "A"];
+  const RING_RULES = {
+    A: ["Wasserfall", "Alle fangen gleichzeitig an zu trinken. Du darfst erst aufhören, wenn dein rechter Nachbar aufhört."],
+    "2": ["Du", "Bestimme, wer zwei Schluck trinkt."],
+    "3": ["Ich", "Du trinkst selbst drei Schluck."],
+    "4": ["Boden", "Alle berühren den Boden. Der Letzte trinkt."],
+    "5": ["Daumenmeister", "Leg irgendwann unauffällig den Daumen auf den Tisch. Wer zuletzt nachzieht, trinkt. Gilt bis zur nächsten 5."],
+    "6": ["Buam", "Alle Buam trinken einen Schluck. Prost!"],
+    "7": ["Himmel", "Alle zeigen nach oben. Der Letzte trinkt."],
+    "8": ["Partner", "Such dir einen Trinkpartner. Wenn du trinkst, trinkt er mit, bis zur nächsten 8."],
+    "9": ["Reim", "Sag ein Wort. Reihum reimen, wer nichts mehr weiß, trinkt."],
+    "10": ["Kategorie", "Nenn eine Kategorie (z. B. Biermarken). Reihum Begriffe nennen, wer nichts weiß, trinkt."],
+    B: ["Regel", "Stell eine neue Regel auf, die bis zum Ende gilt. Wer sie bricht, trinkt."],
+    D: ["Fragenmeister", "Wer dir eine Frage beantwortet, trinkt. Gilt bis zur nächsten Dame."],
+    K: ["König", "Gieß einen Schluck in den Becher in der Mitte. Der vierte König trinkt ihn aus!"],
+  };
+  const EHER = [
+    "… beim Heimweg einschlafen", "… als Erster heimgehen", "… morgen nichts mehr wissen", "… im Club rausgeworfen werden",
+    "… einen Kasten allein schaffen", "… sein Handy verlieren", "… mit dem Türsteher diskutieren", "… um 4 Uhr noch Döner holen",
+    "… beim Exen verschlucken", "… beim Kartenspielen bescheißen", "… sich ein peinliches Tattoo stechen lassen", "… den letzten Bus verpassen",
+    "… mit der Ex schreiben", "… am Wochenende schon um 10 Uhr ein Bier aufmachen", "… Millionär werden", "… beim Karaoke ans Mikro gehen",
+    "… im Urlaub verloren gehen", "… den Grill abfackeln", "… als Erster heiraten", "… einen Abend komplett nüchtern bleiben",
+    "… seinen Geldbeutel daheim vergessen", "… beim Tanzen den Boden küssen", "… einen Kater mit noch mehr Bier bekämpfen", "… beim Gaming ausrasten",
+    "… die Rechnung für alle zahlen", "… den Schlüssel steckenlassen", "… mit dem Chef einen trinken gehen", "… beim Bergsteigen umdrehen",
+  ];
+  const NIE = [
+    "… einen Filmriss gehabt", "… in einer Bar eingeschlafen", "… mein Handy beim Feiern verloren", "… im Club rausgeflogen",
+    "… mit fremden Leuten Brüderschaft getrunken", "… einen Kater geschwänzt", "… mich auf einer Party verlaufen", "… betrunken jemandem geschrieben, den ich bereue",
+    "… ein Bier unter 5 Sekunden geext", "… auf einem Tisch getanzt", "… den letzten Zug verpasst", "… unterm Tisch geschlafen",
+    "… Bier aus einem Schuh getrunken", "… nach dem Feiern Pizza um 5 Uhr bestellt", "… einen Kumpel nach Hause getragen", "… an der Tankstelle Party gemacht",
+    "… im Urlaub was Illegales gegessen", "… an einem Abend mehr als 10 Bier getrunken", "… nach einer Nacht im falschen Bett aufgewacht", "… ein Wiesn-Zelt nicht mehr gefunden",
+    "… einen Pokal gewonnen", "… auf Karaoke gesungen", "… was angezündet, was nicht brennen sollte", "… heimlich das Bier von jemand anderem getrunken",
+    "… mich bei einem Spiel komplett blamiert", "… mit der Polizei Selfies gemacht", "… beim Kartenspielen bescheißen müssen", "… den Kasten allein geschleppt",
+  ];
+  const WHEEL_AMOUNTS = ["1 Schluck", "2 Schluck", "3 Schluck", "Exen!", "Verteil 3", "Joker – nix", "Alle trinken", "Wasser trinken 💧"];
+
+  function viewGames() {
+    if (!S.game) {
+      return `
+        <h2>Spiele</h2>
+        <div class="games">${GAMES.map((g) => `<button class="game" data-act="game" data-g="${g.id}"><span class="game-e">${g.emoji}</span><b>${g.name}</b><span class="muted small">${g.desc}</span></button>`).join("")}</div>
+        <div class="muted small" style="text-align:center">Trinkt bewusst. Wasser zwischendurch macht den Abend länger.</div>`;
+    }
+    const g = GAMES.find((x) => x.id === S.game);
+    const body = { ring: gameRing, bus: gameBus, eher: () => gamePrompt(EHER, "Wer würde eher …", "Auf 3 zeigen alle auf jemanden. Wer die meisten Finger abbekommt, trinkt."), nie: () => gamePrompt(NIE, "Ich hab noch nie …", "Wer es schon gemacht hat, trinkt."), rad: gameWheel, wuerfel: gameDice }[S.game]();
+    return `<div class="game-top"><button class="btn sm ghost" data-act="game-back">‹ Spiele</button><h2>${g.emoji} ${g.name}</h2></div>${body}`;
+  }
+  function cardHtml(c, big) {
+    if (!c) return `<div class="pcard-x back ${big ? "big" : ""}"><span>🍺</span></div>`;
+    return `<div class="pcard-x ${c.red ? "red" : ""} ${big ? "big" : ""}"><span class="cr">${c.r}</span><span class="cs">${c.s}</span><span class="cr bottom">${c.r}</span></div>`;
+  }
+  function newDeck() { const d = []; SUITS.forEach((s) => RANKS.forEach((r, i) => d.push({ r, s: s.s, red: s.red, v: i + 2 }))); return shuffle(d); }
+
+  function gameRing() {
+    const g = S.g;
+    if (!g.deck) { g.deck = newDeck(); g.drawn = null; g.kings = 0; g.turn = 0; }
+    const ps = activePlayers();
+    const cur = ps[g.turn % ps.length];
+    const rule = g.drawn ? RING_RULES[g.drawn.r] : null;
+    const kingTxt = g.drawn?.r === "K" ? (g.kings >= 4 ? "👑 VIERTER KÖNIG! Becher austrinken!" : `König Nr. ${g.kings} von 4`) : "";
+    return `
+      <div class="card game-stage">
+        <div class="muted small">${g.drawn ? "Gezogen von" : "Am Zug"}: <b style="color:var(--foam)">${esc((g.drawn ? g.drawnBy : cur)?.name || "")}</b> · ${g.deck.length} Karten übrig · Könige ${g.kings}/4</div>
+        ${cardHtml(g.drawn, true)}
+        ${rule ? `<div class="rule"><b>${rule[0]}</b><span>${rule[1]}</span>${kingTxt ? `<span class="badge gold">${kingTxt}</span>` : ""}</div>` : `<div class="rule"><span class="muted">Tipp auf „Karte ziehen“.</span></div>`}
+        ${g.deck.length ? `<button class="btn gold block" data-act="ring-draw">Karte ziehen${g.drawn ? ` · weiter: ${esc(cur?.name || "")}` : ""}</button>` : `<div class="rule"><b>Stapel leer!</b></div><button class="btn gold block" data-act="game-reset">Neues Spiel</button>`}
+      </div>
+      <details class="card rules"><summary><h3 style="display:inline">Alle Regeln</h3></summary><div class="list">${["A", ...RANKS.slice(0, 12)].map((r) => `<div class="li"><b style="width:30px">${r}</b><div class="grow"><b>${RING_RULES[r][0]}</b><span class="muted small">${RING_RULES[r][1]}</span></div></div>`).join("")}</div></details>`;
+  }
+  function gameBus() {
+    const g = S.g;
+    if (!g.deck) { g.deck = newDeck(); g.cards = []; g.step = 0; g.tries = 1; g.msg = null; g.driver = g.driver || S.me; g.sips = 0; }
+    const ps = activePlayers();
+    const qs = [
+      { q: "Rot oder Schwarz?", opts: [["rot", "🔴 Rot"], ["schwarz", "⚫ Schwarz"]] },
+      { q: "Höher oder tiefer als die erste Karte?", opts: [["hoeher", "⬆️ Höher"], ["tiefer", "⬇️ Tiefer"]] },
+      { q: "Innerhalb oder außerhalb der ersten beiden?", opts: [["innen", "↔️ Innerhalb"], ["aussen", "⤢ Außerhalb"]] },
+      { q: "Welche Farbe?", opts: [["♥", "♥"], ["♦", "♦"], ["♠", "♠"], ["♣", "♣"]] },
+    ];
+    const done = g.step >= 4;
+    return `
+      <div class="chips">${ps.map((p) => `<button class="chip ${g.driver === p.id ? "on" : ""}" style="--pc:${esc(p.color)}" data-act="bus-driver" data-p="${p.id}">${avatar(p, 28)}${esc(p.name)}</button>`).join("")}</div>
+      <div class="card game-stage">
+        <div class="muted small">Busfahrer: <b style="color:var(--foam)">${esc(player(g.driver)?.name || "")}</b> · Versuch ${g.tries} · ${g.sips} Schluck bisher</div>
+        <div class="bus-row">${[0, 1, 2, 3].map((i) => cardHtml(g.cards[i])).join("")}</div>
+        ${g.msg ? `<div class="rule ${g.msg.ok ? "ok" : "bad"}"><b>${g.msg.t}</b>${g.msg.s ? `<span>${g.msg.s}</span>` : ""}</div>` : ""}
+        ${done ? `<div class="rule ok"><b>🎉 Ausgestiegen!</b><span>Nach ${g.tries} ${g.tries === 1 ? "Versuch" : "Versuchen"} und ${g.sips} Schluck.</span></div><button class="btn gold block" data-act="game-reset">Nächster Busfahrer</button>`
+          : `<div class="rule"><b>${qs[g.step].q}</b></div><div class="row">${qs[g.step].opts.map(([v, l]) => `<button class="btn ${g.step === 3 && (v === "♥" || v === "♦") ? "red-txt" : ""}" data-act="bus-guess" data-v="${v}">${l}</button>`).join("")}</div>`}
+      </div>
+      <div class="muted small">Falsch geraten = so viele Schluck wie die Karten-Nummer (1–4), dann von vorn. Gleich hoch zählt als falsch.</div>`;
+  }
+  function busGuess(v) {
+    const g = S.g;
+    if (g.deck.length < 4) g.deck = newDeck();
+    const c = g.deck.pop();
+    const [a, b] = g.cards;
+    let ok;
+    if (g.step === 0) ok = (v === "rot") === c.red;
+    if (g.step === 1) ok = v === "hoeher" ? c.v > a.v : c.v < a.v;
+    if (g.step === 2) { const lo = Math.min(a.v, b.v), hi = Math.max(a.v, b.v); ok = v === "innen" ? c.v > lo && c.v < hi : c.v < lo || c.v > hi; }
+    if (g.step === 3) ok = v === c.s;
+    g.cards[g.step] = c;
+    if (ok) { g.step++; g.msg = g.step < 4 ? { ok: true, t: "Richtig! Weiter." } : null; buzz(20); }
+    else {
+      const n = g.step + 1;
+      g.sips += n;
+      g.msg = { ok: false, t: `Falsch! ${n} ${n === 1 ? "Schluck" : "Schluck"} trinken.`, s: "Und nochmal von vorn." };
+      buzz(80);
+      setTimeout(() => { if (S.game === "bus" && !g.msg?.ok) { g.cards = []; g.step = 0; g.tries++; g.msg = { ok: false, t: "Neuer Versuch" }; render(); } }, 1600);
+    }
+    render();
+  }
+  function gamePrompt(list, title, rule) {
+    const g = S.g;
+    if (!g.order) { g.order = shuffle(list); g.i = 0; }
+    const txt = g.order[g.i % g.order.length];
+    return `
+      <div class="card game-stage">
+        <div class="prompt-pre">${title}</div>
+        <div class="prompt">${esc(txt)}</div>
+        <div class="muted small" style="text-align:center">${rule}</div>
+        <button class="btn gold block" data-act="prompt-next">Nächste Frage</button>
+        <div class="muted small" style="text-align:center">${(g.i % g.order.length) + 1} / ${g.order.length}</div>
+      </div>`;
+  }
+  function gameWheel() {
+    const g = S.g;
+    g.mode ||= "wer";
+    g.items = g.mode === "wer" ? activePlayers().map((p) => ({ label: p.name, color: p.color })) : WHEEL_AMOUNTS.map((l, i) => ({ label: l, color: COLORS[i % COLORS.length] }));
+    return `
+      <div class="seg"><button class="${g.mode === "wer" ? "on" : ""}" data-act="wheel-mode" data-m="wer">Wer trinkt?</button><button class="${g.mode === "was" ? "on" : ""}" data-act="wheel-mode" data-m="was">Wie viel?</button></div>
+      <div class="card game-stage">
+        <div class="wheel-wrap"><canvas id="wheel" width="600" height="600"></canvas><div class="wheel-pin">▼</div></div>
+        <div class="rule" id="wheel-res">${g.result != null ? `<b>${esc(g.result)}</b>` : `<span class="muted">Dreh am Rad!</span>`}</div>
+        <button class="btn gold block" data-act="wheel-spin">🎡 Drehen</button>
+      </div>`;
+  }
+  function drawWheel() {
+    const c = $("#wheel");
+    if (!c) return;
+    const g = S.g, items = g.items, n = items.length, ctx = c.getContext("2d"), R = 290, cx = 300, cy = 300;
+    const rot = g.rot || 0;
+    ctx.clearRect(0, 0, 600, 600);
+    if (!n) return;
+    const step = (Math.PI * 2) / n;
+    items.forEach((it, i) => {
+      const a0 = rot + i * step - Math.PI / 2;
+      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, R, a0, a0 + step); ctx.closePath();
+      ctx.fillStyle = it.color; ctx.globalAlpha = i % 2 ? 0.82 : 1; ctx.fill(); ctx.globalAlpha = 1;
+      ctx.strokeStyle = "#0e1a14"; ctx.lineWidth = 4; ctx.stroke();
+      ctx.save(); ctx.translate(cx, cy); ctx.rotate(a0 + step / 2);
+      ctx.fillStyle = "#14110a"; ctx.font = `800 ${n > 6 ? 26 : 32}px Manrope, sans-serif`; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+      const label = it.label.length > 14 ? it.label.slice(0, 13) + "…" : it.label;
+      ctx.fillText(label, R - 22, 0); ctx.restore();
+    });
+    ctx.beginPath(); ctx.arc(cx, cy, 44, 0, Math.PI * 2); ctx.fillStyle = "#0e1a14"; ctx.fill();
+    ctx.font = "40px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("🍺", cx, cy + 2);
+  }
+  function spinWheel() {
+    const g = S.g;
+    if (g.spinning || !g.items.length) return;
+    g.spinning = true; g.result = null;
+    const res = $("#wheel-res"); if (res) res.innerHTML = `<span class="muted">…</span>`;
+    const start = g.rot || 0, n = g.items.length, step = (Math.PI * 2) / n;
+    const target = Math.floor(Math.random() * n);
+    // Segment target soll oben unter dem Zeiger landen
+    let end = -(target * step + step / 2) + (Math.random() - 0.5) * step * 0.7;
+    end += Math.ceil((start - end) / (Math.PI * 2)) * Math.PI * 2 + Math.PI * 2 * (5 + Math.floor(Math.random() * 3));
+    const dur = 4200, t0 = performance.now();
+    const ease = (t) => 1 - Math.pow(1 - t, 4);
+    const loop = (now) => {
+      const t = Math.min(1, (now - t0) / dur);
+      g.rot = start + (end - start) * ease(t);
+      drawWheel();
+      if (t < 1 && S.game === "rad") requestAnimationFrame(loop);
+      else {
+        g.spinning = false; g.result = g.items[target].label; buzz(60);
+        const r = $("#wheel-res"); if (r) r.innerHTML = `<b>${esc(g.result)}</b>`;
+      }
+    };
+    requestAnimationFrame(loop);
+  }
+  function gameDice() {
+    const g = S.g;
+    const faces = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
+    const d = g.dice || [null, null];
+    let note = "";
+    if (d[0]) {
+      const hi = Math.max(...d), lo = Math.min(...d);
+      if (hi === 2 && lo === 1) note = "🎉 MÄXCHEN!";
+      else if (hi === lo) note = `${hi}er-Pasch`;
+      else note = `Mäxchen-Wert: ${hi}${lo}`;
+    }
+    return `
+      <div class="card game-stage">
+        <div class="dice ${g.rolling ? "rolling" : ""}">${d.map((x) => `<span>${x ? faces[x - 1] : "🎲"}</span>`).join("")}</div>
+        <div class="rule">${note ? `<b>${note}</b>` : `<span class="muted">Tipp zum Würfeln</span>`}</div>
+        <button class="btn gold block" data-act="dice-roll">🎲 Würfeln</button>
+      </div>
+      <details class="card rules"><summary><h3 style="display:inline">Mäxchen kurz erklärt</h3></summary><p class="small" style="margin:8px 0 0">Würfle verdeckt und sag einen Wert an, der höher sein muss als der vorherige (gerne gelogen). Der Nächste glaubt es und würfelt weiter, oder er deckt auf. Erwischt beim Lügen = trinken, zu Unrecht angezweifelt = der Zweifler trinkt. Reihenfolge: 31 &lt; 32 &lt; … &lt; 65 &lt; Pasch (11 bis 66) &lt; 21 (Mäxchen).</p></details>`;
+  }
+
+  // ---------- Sheets ----------
   function confirmSheet(title, text, label, cls, onYes) {
+    S.openEvening = null;
     openSheet(`<h2>${title}</h2>${text ? `<p class="muted" style="margin:0">${text}</p>` : ""}<div class="row"><button class="btn ghost" data-act="close">Abbrechen</button><button class="btn ${cls}" data-act="confirm-yes">${label}</button></div>`);
     confirmSheet.cb = onYes;
   }
@@ -500,17 +843,29 @@
   // ---------- Aktionen ----------
   const actions = {
     reload: () => loadAll(),
-    goto: (el) => { closeSheet(); S.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
     close: closeSheet,
+    "login-pick": (el) => loginSheet(el.dataset.p),
+    "login-go": async (el) => {
+      const pin = ($("#pin").value || "").trim();
+      if (!/^\d{4}$/.test(pin)) return toast("Die PIN hat 4 Ziffern");
+      const ok = await rpc("bbb_claim", { p_player: el.dataset.p, p_pin: pin });
+      if (!ok) { $("#pin").value = ""; buzz(80); return toast("Falsche PIN"); }
+      S.me = el.dataset.p; S.pin = pin; S.authed = true;
+      store.set("bbb_me", S.me); store.set("bbb_pin", pin);
+      closeSheet(); await loadAll();
+      toast(`Servus, ${player(S.me)?.name}!`);
+    },
+    logout: () => confirmSheet("Abmelden?", "Danach musst du deinen Namen und deine PIN neu eingeben.", "Abmelden", "red", () => { closeSheet(); logout(); render(); }),
     "start-evening": async () => {
       const title = ($("#ev-title")?.value || "").trim() || null;
       await insert("evenings", { title });
       buzz(30); toast("Abend gestartet. Prost! 🍻");
     },
-    "end-evening": () => confirmSheet("Abend beenden?", "Danach landet er im Rückblick. Abstimmen geht dort weiter.", "Beenden", "gold", async () => {
+    "end-evening": () => confirmSheet("Abend beenden?", "Danach landet er unter Stats → Abende. Abstimmen geht dort weiter.", "Beenden", "gold", async () => {
       const ev = currentEvening();
+      closeSheet();
       if (ev) await patch("evenings", ev.id, { ended_at: new Date().toISOString() });
-      closeSheet(); S.tab = "rueckblick"; render(); if (ev) openEvening(ev.id);
+      S.tab = "stats"; S.statsView = "abende"; render(); if (ev) openEvening(ev.id);
     }),
     drink: async (el) => {
       const ev = currentEvening();
@@ -522,10 +877,9 @@
     home: (el) => {
       const p = player(el.dataset.p);
       const self = el.dataset.p === S.me;
-      confirmSheet(`🏠 ${esc(p.name)} geht heim?`, self ? "Gute Heimreise!" : "Du trägst das für " + esc(p.name) + " ein.", "Eintragen", "gold", async () => {
+      confirmSheet(`🏠 ${esc(p.name)} geht heim?`, self ? "Gute Heimreise! Schreib in die Gruppe, wenn du daheim bist." : "Du trägst das für " + esc(p.name) + " ein.", "Eintragen", "gold", async () => {
         closeSheet();
-        const ev = currentEvening();
-        const row = await insert("departures", { evening_id: ev.id, player_id: p.id, entered_by: S.me || null });
+        const row = await insert("departures", { evening_id: currentEvening().id, player_id: p.id, entered_by: S.me });
         toast(`${p.name} ist daheim (${fmtTime(row.left_at)})`, () => remove("departures", row.id));
       });
     },
@@ -540,14 +894,31 @@
       });
     },
     vote: async (el) => {
-      if (!S.me) return pickMe();
       const { ev, c, p } = el.dataset;
       const existing = S.votes.find((v) => v.evening_id === ev && v.category === c && v.voter_id === S.me);
       buzz();
-      if (existing && existing.target_id === p) { const done = remove("votes", existing.id); if (S.openEvening) openEvening(S.openEvening); return done; }
-      if (existing) { existing.target_id = p; render(); if (S.openEvening) openEvening(S.openEvening); await db(sb.from("votes").update({ target_id: p }).eq("id", existing.id)); return; }
+      if (existing && existing.target_id === p) return remove("votes", existing.id);
+      if (existing) return patch("votes", existing.id, { target_id: p });
       await insert("votes", { evening_id: ev, category: c, voter_id: S.me, target_id: p });
-      if (S.openEvening) openEvening(S.openEvening);
+    },
+    del: (el) => {
+      const { t, id } = el.dataset;
+      const keep = S.openEvening;
+      confirmSheet("Eintrag löschen?", "Das kann nicht rückgängig gemacht werden.", "Löschen", "red", async () => {
+        closeSheet();
+        await remove(t, id);
+        toast("Gelöscht");
+        if (keep) openEvening(keep);
+      });
+    },
+    "del-evening": (el) => {
+      const id = el.dataset.id;
+      confirmSheet("Abend löschen?", "Alle Getränke, Heimgänge, Kotzer und Stimmen dieses Abends werden gelöscht. Exen-Zeiten bleiben.", "Endgültig löschen", "red", async () => {
+        closeSheet();
+        await remove("evenings", id);
+        ["drinks", "departures", "pukes", "votes"].forEach((t) => (S[t] = S[t].filter((r) => r.evening_id !== id)));
+        render(); toast("Abend gelöscht");
+      });
     },
     wkind: (el) => { if (S.watch.running) return; S.watch.kind = el.dataset.k; store.set("bbb_watch_kind", el.dataset.k); S.watch.result = null; render(); },
     wplayer: (el) => { if (S.watch.running) return; S.watch.player = el.dataset.p; store.set("bbb_watch_player", el.dataset.p); S.watch.result = null; render(); },
@@ -558,31 +929,22 @@
     },
     wdiscard: () => { S.watch.result = null; render(); },
     wsave: async () => {
-      const w = S.watch;
-      const ms = w.result;
-      const prev = bestChugs(w.kind)[0];
+      const w = S.watch, ms = w.result, prev = bestChugs(w.kind)[0];
       w.result = null;
       await insert("chugs", { evening_id: currentEvening()?.id || null, player_id: w.player, kind: w.kind, ms });
       toast(!prev || ms < prev.ms ? "🏆 Neuer Rekord gespeichert!" : `Gespeichert: ${fmtMs(ms)}`);
     },
     rkind: (el) => { S.rankKind = el.dataset.k; render(); },
+    "stats-view": (el) => { S.statsView = el.dataset.v; render(); },
     "open-evening": (el) => openEvening(el.dataset.id),
-    "del-evening": (el) => {
-      const id = el.dataset.id;
-      confirmSheet("Abend löschen?", "Alle Getränke, Heimgänge, Kotzer und Stimmen dieses Abends werden gelöscht. Exen-Zeiten bleiben.", "Endgültig löschen", "red", async () => {
-        closeSheet();
-        await remove("evenings", id);
-        ["drinks", "departures", "pukes", "votes"].forEach((t) => (S[t] = S[t].filter((r) => r.evening_id !== id)));
-        render(); toast("Abend gelöscht");
-      });
-    },
     "pick-color": (el) => { el.parentElement.querySelectorAll(".sw").forEach((s) => s.classList.toggle("on", s === el)); },
+    "add-player-sheet": addPlayerSheet,
     "add-player": async () => {
       const name = ($("#np-name").value || "").trim();
       if (!name) { $("#np-name").focus(); return toast("Gib einen Namen ein"); }
       const color = $("#np-colors .sw.on")?.dataset.c || COLORS[0];
-      const p = await insert("players", { name, color });
-      if (!S.me) { S.me = p.id; store.set("bbb_me", p.id); }
+      await rpc("bbb_add_player", { p_name: name, p_color: color });
+      closeSheet(); await loadAll();
       toast(`${name} ist dabei 🤠`);
     },
     "edit-player": (el) => editPlayer(el.dataset.p),
@@ -591,45 +953,93 @@
       if (!name) return toast("Name darf nicht leer sein");
       const emoji = ($("#ep-emoji").value || "").trim() || null;
       const color = $("#ep-colors .sw.on")?.dataset.c;
-      closeSheet();
-      await patch("players", el.dataset.p, { name, emoji, color });
-      toast("Gespeichert");
+      await updatePlayer(el.dataset.p, { name, emoji, color });
+      closeSheet(); toast("Gespeichert");
     },
-    "toggle-player": async (el) => { const p = player(el.dataset.p); closeSheet(); await patch("players", p.id, { active: !p.active }); },
-    "set-me": (el) => { S.me = el.dataset.p; store.set("bbb_me", S.me); closeSheet(); render(); toast(`Servus, ${player(S.me).name}!`); },
+    "toggle-player": async (el) => { const p = player(el.dataset.p); await updatePlayer(p.id, { active: !p.active }); closeSheet(); },
+    "reset-pin": (el) => {
+      const p = player(el.dataset.p);
+      confirmSheet(`PIN von ${esc(p.name)} zurücksetzen?`, "Er kann sich danach mit einer neuen PIN wieder anmelden.", "Zurücksetzen", "gold", async () => {
+        await rpc("bbb_reset_pin", { p_target: p.id });
+        closeSheet(); await loadAll(); toast("PIN zurückgesetzt");
+      });
+    },
+    "change-pin": changePinSheet,
+    "save-pin": async () => {
+      const o = $("#pin-old").value.trim(), n = $("#pin-new").value.trim();
+      if (!/^\d{4}$/.test(n)) return toast("Die neue PIN braucht 4 Ziffern");
+      await db(sb.rpc("bbb_change_pin", { p_player: S.me, p_pin: o, p_new: n }));
+      S.pin = n; store.set("bbb_pin", n); closeSheet(); toast("PIN geändert");
+    },
+    photo: (el) => { const inp = $("#photo-input"); if (!inp) return; inp.dataset.p = el.dataset.p || S.me; inp.value = ""; inp.click(); },
+    "photo-remove": async (el) => { await updatePlayer(el.dataset.p || S.me, { avatar: null }); closeSheet(); toast("Profilbild entfernt"); },
     share: async () => {
       const url = location.origin + location.pathname;
-      try { await navigator.clipboard.writeText(url); toast("Link kopiert – ab in die Gruppe damit!"); }
+      try { await navigator.clipboard.writeText(url); toast("Link kopiert. Ab in die Gruppe damit!"); }
       catch { toast(url); }
+    },
+    game: (el) => { S.game = el.dataset.g; S.g = {}; render(); window.scrollTo(0, 0); },
+    "game-back": () => { S.game = null; S.g = {}; render(); },
+    "game-reset": () => { const d = S.g.driver; S.g = { driver: d }; render(); },
+    "ring-draw": () => {
+      const g = S.g, ps = activePlayers();
+      g.drawnBy = ps[g.turn % ps.length];
+      g.drawn = g.deck.pop(); g.turn++;
+      if (g.drawn.r === "K") g.kings++;
+      buzz(g.drawn.r === "K" && g.kings === 4 ? 200 : 20);
+      render();
+    },
+    "bus-driver": (el) => { S.g = { driver: el.dataset.p }; render(); },
+    "bus-guess": (el) => busGuess(el.dataset.v),
+    "prompt-next": () => { S.g.i++; buzz(); render(); },
+    "wheel-mode": (el) => { if (S.g.spinning) return; S.g = { mode: el.dataset.m }; render(); },
+    "wheel-spin": spinWheel,
+    "dice-roll": () => {
+      const g = S.g;
+      g.rolling = true; render();
+      setTimeout(() => { g.rolling = false; g.dice = [1 + Math.floor(Math.random() * 6), 1 + Math.floor(Math.random() * 6)]; buzz(30); render(); }, 450);
     },
     "confirm-yes": () => confirmSheet.cb && confirmSheet.cb(),
   };
 
+  document.addEventListener("change", async (e) => {
+    if (e.target.id !== "photo-input" || !e.target.files[0]) return;
+    try {
+      toast("Bild wird hochgeladen …");
+      const data = await resizeImage(e.target.files[0]);
+      await updatePlayer(e.target.dataset.p || S.me, { avatar: data });
+      toast("Profilbild gespeichert 📸");
+    } catch (err) { console.error(err); toast(errMsg(err)); }
+  });
   document.addEventListener("click", async (e) => {
     if (e.target.closest("[data-close]")) return closeSheet();
     const tab = e.target.closest("#tabbar button");
-    if (tab) { if (S.watch.running) return toast("Erst die Stoppuhr stoppen"); S.tab = tab.dataset.tab; store.set("bbb_tab", S.tab); render(); window.scrollTo(0, 0); return; }
-    if (e.target.closest("#me-chip")) return pickMe();
+    if (tab) {
+      if (S.watch.running) return toast("Erst die Stoppuhr stoppen");
+      if (S.tab === tab.dataset.tab && S.tab === "spiele") { S.game = null; S.g = {}; }
+      S.tab = tab.dataset.tab; store.set("bbb_tab", S.tab); render(); window.scrollTo(0, 0); return;
+    }
+    if (e.target.closest("#me-chip")) { S.tab = "profil"; store.set("bbb_tab", "profil"); render(); window.scrollTo(0, 0); return; }
     const el = e.target.closest("[data-act]");
-    if (!el || !actions[el.dataset.act]) return;
-    if (el.disabled) return;
-    el.disabled = el.tagName === "BUTTON" && ["drink", "wsave", "add-player", "start-evening", "confirm-yes"].includes(el.dataset.act);
+    if (!el || !actions[el.dataset.act] || el.disabled) return;
+    const lock = el.tagName === "BUTTON" && ["drink", "wsave", "add-player", "start-evening", "confirm-yes", "login-go", "save-player", "save-pin"].includes(el.dataset.act);
+    if (lock) el.disabled = true;
     try { await actions[el.dataset.act](el); } catch (err) { console.error(err); }
-    finally { el.disabled = false; }
+    finally { if (lock) el.disabled = false; }
   });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeSheet();
-    if (e.key === "Enter" && e.target.id === "np-name") actions["add-player"]();
+    if (e.key === "Enter" && e.target.id === "pin") $("[data-act=login-go]")?.click();
+  });
+  document.addEventListener("input", (e) => {
+    if (e.target.id === "pin" && /^\d{4}$/.test(e.target.value)) $("[data-act=login-go]")?.click();
   });
 
   // ---------- Start ----------
-  S.tab = store.get("bbb_tab") || "abend";
   render();
   loadAll();
-  sb.channel("stube")
-    .on("postgres_changes", { event: "*", schema: "public" }, scheduleReload)
-    .subscribe();
-  setInterval(() => { if (document.visibilityState === "visible" && !S.watch.running) loadAll(); }, 30000);
+  sb.channel("stube").on("postgres_changes", { event: "*", schema: "public" }, scheduleReload).subscribe();
+  setInterval(() => { if (document.visibilityState === "visible" && !S.watch.running && $("#sheet").hidden) loadAll(); }, 30000);
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") loadAll(); });
   setInterval(() => { if (S.tab === "abend" && currentEvening() && $("#sheet").hidden && !document.activeElement?.matches("input")) render(); }, 60000);
 
