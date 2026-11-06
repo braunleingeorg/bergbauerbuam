@@ -252,7 +252,7 @@
     v.querySelectorAll("input[id], textarea[id]").forEach((i) => { if (i.type !== "file") keep[i.id] = { v: i.value, f: document.activeElement === i, s: i.selectionStart }; });
     const chatEl = v.querySelector(".chat-list");
     const nearBottom = !chatEl || window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
-    v.innerHTML = (views[S.tab] || viewAbend)();
+    v.innerHTML = DRAW.banner() + (views[S.tab] || viewAbend)();
     Object.entries(keep).forEach(([id, k]) => { const i = document.getElementById(id); if (i) { i.value = k.v; if (k.f) { i.focus(); try { i.setSelectionRange(k.s, k.s); } catch {} } } });
     if (v.querySelector(".chat-list") && (nearBottom || S.scrollChat)) { S.scrollChat = false; requestAnimationFrame(() => window.scrollTo(0, document.body.scrollHeight)); }
     const game = S.tab === "spiele" && S.game && allGames().find((x) => x.id === S.game);
@@ -720,7 +720,7 @@
     { id: "action", label: "⚡ Action" },
     { id: "fragen", label: "💬 Fragen & Raten" },
   ];
-  const allGames = () => GAMES.concat(EXTRA.games).filter((g) => !g.pimmel || S.pimmel);
+  const allGames = () => [DRAW.game].filter(Boolean).concat(GAMES, EXTRA.games).filter((g) => !g.pimmel || S.pimmel);
   function viewGames() {
     if (!S.game) {
       return `
@@ -892,6 +892,12 @@
   const EXTRA = window.BBB_GAMES
     ? window.BBB_GAMES({ S, $, esc, avatar, activePlayers, render: () => render(), buzz, shuffle, pick, toast, player })
     : { games: [], actions: {}, stop() {} };
+  const DRAW = window.BBB_DRAW
+    ? window.BBB_DRAW({ S, sb, esc, avatar, player, activePlayers, render: () => render(), buzz, shuffle, pick, toast, rpc: (fn, a) => rpc(fn, a), isAdmin, currentEvening })
+    : { game: null, actions: {}, banner: () => "", stop() {} };
+  Object.assign(EXTRA.actions, DRAW.actions);
+  const stopExtra = EXTRA.stop;
+  EXTRA.stop = () => { stopExtra(); DRAW.stop(); };
 
   // ---------- Medien ----------
   const mediaUrl = (m) => sb.storage.from("media").getPublicUrl(m.path).data.publicUrl;
