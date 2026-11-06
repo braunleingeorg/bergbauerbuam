@@ -94,6 +94,34 @@ window.BBB_GAMES = function (api) {
     ["Wie groß ist der Bodensee?", 536, "km²"], ["Wie viele Herzen hat ein Oktopus?", 3, ""], ["In welchem Jahr wurde die Bundesrepublik gegründet?", 1949, ""],
   ];
 
+  // ---------- Pimmel-Modus 🍆 ----------
+  const BOTTLE_SVG = `<svg viewBox="0 0 40 120" width="40" height="120" aria-hidden="true"><rect x="15" y="2" width="10" height="10" rx="2" fill="#c98a12"/><rect x="14" y="10" width="12" height="28" rx="3" fill="#3f8f5a"/><path d="M14 38 Q6 48 6 60 L6 112 Q6 118 12 118 L28 118 Q34 118 34 112 L34 60 Q34 48 26 38 Z" fill="#3f8f5a"/><rect x="9" y="66" width="22" height="26" rx="3" fill="#f4ecdc"/><rect x="12" y="74" width="16" height="3" fill="#c98a12"/><rect x="12" y="80" width="12" height="3" fill="#c98a12"/></svg>`;
+  // Spitze zeigt nach oben, damit die Drehung gleich funktioniert wie bei der Flasche
+  const PIMMEL_SVG = `<svg viewBox="0 0 60 150" width="48" height="120" aria-hidden="true">
+    <rect x="17" y="26" width="26" height="92" rx="13" fill="#f2b5a6"/>
+    <path d="M14 34 Q14 6 30 6 Q46 6 46 34 Q46 42 30 42 Q14 42 14 34 Z" fill="#e8849a"/>
+    <path d="M30 8 L30 16" stroke="#c45f78" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="24" cy="26" r="3.2" fill="#2a1a1a"/><circle cx="36" cy="26" r="3.2" fill="#2a1a1a"/>
+    <circle cx="25" cy="25" r="1" fill="#fff"/><circle cx="37" cy="25" r="1" fill="#fff"/>
+    <path d="M25 33 Q30 37 35 33" stroke="#2a1a1a" stroke-width="2" fill="none" stroke-linecap="round"/>
+    <circle cx="18" cy="126" r="17" fill="#eea495"/><circle cx="42" cy="126" r="17" fill="#eea495"/>
+    <path d="M30 114 L30 140" stroke="#d98a7c" stroke-width="2" stroke-linecap="round"/>
+  </svg>`;
+  const PIMMEL_PARTY = [
+    { t: "Pimmel-Runde! {A} fängt an und sagt leise „Pimmel“. Reihum jedes Mal lauter. Wer kneift, trinkt 2.", type: "alle" },
+    { t: "{A}, mal in 10 Sekunden einen Pimmel auf eine Serviette. Die Gruppe gibt Punkte von 1 bis 10. Unter 5: trinken.", type: "normal" },
+    { t: "Wer als Letzter ein 🍆 in die Gruppe schickt, trinkt 2.", type: "alle" },
+    { t: "Kategorie: Andere Wörter für Pimmel. {A} beginnt, wer nichts mehr weiß, trinkt.", type: "normal" },
+    { t: "{A} gegen {B}: Wer zuerst „Pimmelparade“ dreimal schnell sagen kann, ohne zu lachen. Verlierer trinkt.", type: "duell" },
+    { t: "{A}, form mit Händen und Fingern den schönsten Pimmel. {B} bewertet. Unter 7 Punkten: 2 Schluck.", type: "normal" },
+    { t: "Alle, die heute schon „Pimmel“ gesagt haben, trinken. Ab jetzt zählt's.", type: "alle" },
+    { t: "{A}, gib {B} einen neuen Spitznamen mit „Pimmel“ drin. Gilt bis Abend-Ende.", type: "normal" },
+  ];
+  const PIMMEL_RULES = [
+    { start: "Regel 🍆: {A} muss in jeden Satz „Pimmel“ einbauen. Vergessen = 1 Schluck.", end: "{A} darf wieder ohne Pimmel reden." },
+    { start: "Regel 🍆: Statt „Prost“ sagen alle „Pimmel hoch“. Wer „Prost“ sagt, trinkt.", end: "„Prost“ ist wieder erlaubt." },
+  ];
+
   // ---------- Hilfen ----------
   const names = () => activePlayers().map((p) => p.name);
   function fill(t) {
@@ -122,8 +150,10 @@ window.BBB_GAMES = function (api) {
 
   // ---------- Party-Modus (Picolo-Stil) ----------
   function partyDeck() {
-    const deck = shuffle(PARTY).slice(0, 30).map((c) => ({ ...c, text: fill(c.t) }));
-    shuffle(RULES).slice(0, 3).forEach((r) => {
+    const pool = S.pimmel ? PARTY.concat(PIMMEL_PARTY, PIMMEL_PARTY.slice(0, 4)) : PARTY;
+    const deck = shuffle(pool).slice(0, 30).map((c) => ({ ...c, text: fill(c.t) }));
+    const seen = new Set(); for (let i = deck.length - 1; i >= 0; i--) { if (seen.has(deck[i].text)) deck.splice(i, 1); else seen.add(deck[i].text); }
+    shuffle(S.pimmel ? RULES.concat(PIMMEL_RULES, PIMMEL_RULES) : RULES).filter((r, i, a) => a.indexOf(r) === i).slice(0, 3).forEach((r) => {
       const ns = shuffle(names());
       const sub = (t) => t.replaceAll("{A}", ns[0] || "Du").replaceAll("{B}", ns[1] || ns[0] || "dein Nachbar");
       const at = Math.floor(Math.random() * (deck.length - 10));
@@ -194,7 +224,7 @@ window.BBB_GAMES = function (api) {
   function bombStart() {
     const g = S.g;
     stopAll();
-    g.state = "tick"; g.topic = pick(BOMB_TOPICS);
+    g.state = "tick"; g.topic = pick(bombTopics());
     const total = 15000 + Math.random() * 35000, t0 = Date.now();
     const tickLoop = () => {
       const left = total - (Date.now() - t0);
@@ -317,7 +347,7 @@ window.BBB_GAMES = function (api) {
         <div class="bottle-ring">
           ${ps.map((p, i) => { const a = (i / n) * Math.PI * 2 - Math.PI / 2; return `<div class="b-seat ${g.target === i && !g.spinning ? "on" : ""}" style="left:${50 + R * Math.cos(a)}%;top:${50 + R * Math.sin(a)}%">${avatar(p, 44)}<span>${esc(p.name)}</span></div>`; }).join("")}
           <div class="bottle" id="bottle" style="transform:translate(-50%,-50%) rotate(${g.rot}deg)">
-            <svg viewBox="0 0 40 120" width="40" height="120" aria-hidden="true"><rect x="15" y="2" width="10" height="10" rx="2" fill="#c98a12"/><rect x="14" y="10" width="12" height="28" rx="3" fill="#3f8f5a"/><path d="M14 38 Q6 48 6 60 L6 112 Q6 118 12 118 L28 118 Q34 118 34 112 L34 60 Q34 48 26 38 Z" fill="#3f8f5a"/><rect x="9" y="66" width="22" height="26" rx="3" fill="#f4ecdc"/><rect x="12" y="74" width="16" height="3" fill="#c98a12"/><rect x="12" y="80" width="12" height="3" fill="#c98a12"/></svg>
+            ${S.pimmel ? PIMMEL_SVG : BOTTLE_SVG}
           </div>
         </div>
         <div class="rule">${g.target != null && !g.spinning ? `<b>${esc(ps[g.target]?.name)}!</b><span class="muted">Wahrheit, Pflicht oder 2 Schluck.</span>` : `<span class="muted">${g.spinning ? "…" : "Dreh die Flasche"}</span>`}</div>
@@ -391,8 +421,30 @@ window.BBB_GAMES = function (api) {
     </div>`;
   }
 
+  function bombTopics() { return S.pimmel ? BOMB_TOPICS.concat(["Andere Wörter für Pimmel", "Dinge, die aussehen wie ein Pimmel"]) : BOMB_TOPICS; }
+
+  // ---------- Pimmel-Spiel ----------
+  function viewPimmel() {
+    const g = S.g;
+    const ps = activePlayers();
+    const cur = ps[(g.turn || 0) % ps.length];
+    const lvl = g.level || 0;
+    if (g.loser) return `<div class="card game-stage">
+      <div class="pim-word" style="font-size:64px">🐔</div>
+      <div class="rule"><b>${esc(g.loser)} hat gekniffen!</b><span>2 Schluck. Rekord heute: Stufe ${g.best || 0}.</span></div>
+      <button class="btn gold block" data-act="pim-next">Nochmal von leise</button>
+    </div>`;
+    return `<div class="card game-stage">
+      <div class="muted small" style="text-align:center">Reihum „Pimmel“ sagen, jedes Mal lauter als der davor. Wer sich nicht mehr traut, tippt auf „Kneifen“ und trinkt.</div>
+      <div class="pim-word" style="font-size:${Math.min(22 + lvl * 9, 130)}px">PIMMEL${"!".repeat(Math.min(lvl, 6))}</div>
+      <div class="rule"><span class="muted">Stufe ${lvl} · dran:</span><b>${esc(cur?.name || "")}</b></div>
+      <div class="row"><button class="btn" data-act="pim-chicken">🐔 Kneifen</button><button class="btn gold" data-act="pim-say">🍆 Gesagt!</button></div>
+    </div>`;
+  }
+
   // ---------- Registrierung ----------
   const games = [
+    { id: "pimmel", cat: "party", name: "Pimmel-Spiel", emoji: "🍆", desc: "Reihum immer lauter „Pimmel“ sagen. Wer kneift, trinkt.", view: viewPimmel, pimmel: true },
     { id: "party", cat: "party", name: "Bergbauerbuam-Party", emoji: "🎉", desc: "Picolo-Style mit euren Namen, Regeln und Duellen.", view: viewParty },
     { id: "roulette", cat: "party", name: "Party Roulette", emoji: "🎰", desc: "Das Handy wählt jemanden: Wahrheit oder Pflicht.", view: viewRoulette },
     { id: "bombe", cat: "action", name: "Bombe", emoji: "💣", desc: "Begriff sagen, Handy weitergeben, bevor's knallt.", view: viewBomb },
@@ -406,7 +458,10 @@ window.BBB_GAMES = function (api) {
     "rou-spin": rouSpin,
     "rou-card": (el) => { const k = el.dataset.k; S.g.card = { k, t: pick(k === "w" ? TRUTH : DARE) }; render(); },
     "bomb-start": bombStart,
-    "bomb-topic": () => { S.g.topic = pick(BOMB_TOPICS.filter((t) => t !== S.g.topic)); render(); },
+    "bomb-topic": () => { S.g.topic = pick(bombTopics().filter((t) => t !== S.g.topic)); render(); },
+    "pim-say": () => { const g = S.g; g.level = (g.level || 0) + 1; g.turn = (g.turn || 0) + 1; beep(300 + g.level * 60, 0.08, Math.min(0.5, 0.05 + g.level * 0.03)); buzz(10 + g.level * 8); render(); },
+    "pim-chicken": () => { const g = S.g; const ps = activePlayers(); const who = ps[(g.turn || 0) % ps.length]; g.loser = who?.name; g.best = Math.max(g.best || 0, g.level || 0); g.level = 0; buzz(200); render(); },
+    "pim-next": () => { S.g.loser = null; render(); },
     "bomb-reset": () => { stopAll(); S.g = { state: "idle" }; render(); },
     "duel-mode": (el) => { S.g.mode = el.dataset.m; S.g.score = [0, 0]; render(); },
     "duel-p": (el) => { S.g[el.dataset.s === "a" ? "pa" : "pb"] = el.dataset.p; S.g.score = [0, 0]; render(); },

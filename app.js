@@ -34,6 +34,7 @@
   // ---------- Zustand ----------
   const S = {
     tab: store.get("bbb_tab") || "abend",
+    pimmel: store.get("bbb_pimmel") === "1",
     players: [], evenings: [], drinks: [], chugs: [], departures: [], pukes: [], votes: [], media: [], messages: [],
     abendView: "zaehlen", month: null, kastenPreis: store.get("bbb_kasten") || "",
     loaded: false, error: null,
@@ -592,6 +593,7 @@
           <button class="set-row" data-act="edit-player" data-p="${p.id}"><span>✏️</span><span class="grow">Name, Farbe & Emoji</span><span class="muted">›</span></button>
           <button class="set-row" data-act="photo"><span>📷</span><span class="grow">Profilbild ${p.avatar ? "ändern" : "hinzufügen"}</span><span class="muted">›</span></button>
           ${p.avatar ? `<button class="set-row" data-act="photo-remove"><span>🗑️</span><span class="grow">Profilbild entfernen</span></button>` : ""}
+          <button class="set-row" data-act="toggle-pimmel"><span>🍆</span><span class="grow">Pimmel-Modus<span class="muted small" style="display:block;font-weight:600">Pimmel im Flaschendrehen, Glücksrad, Party-Karten & eigenes Spiel</span></span><span class="switch ${S.pimmel ? "on" : ""}"></span></button>
           <button class="set-row" data-act="change-pin"><span>🔒</span><span class="grow">PIN ändern</span><span class="muted">›</span></button>
           <button class="set-row" data-act="logout"><span>🚪</span><span class="grow">Abmelden</span></button>
         </div>
@@ -718,7 +720,7 @@
     { id: "action", label: "⚡ Action" },
     { id: "fragen", label: "💬 Fragen & Raten" },
   ];
-  const allGames = () => GAMES.concat(EXTRA.games);
+  const allGames = () => GAMES.concat(EXTRA.games).filter((g) => !g.pimmel || S.pimmel);
   function viewGames() {
     if (!S.game) {
       return `
@@ -840,7 +842,7 @@
       ctx.fillText(label, R - 22, 0); ctx.restore();
     });
     ctx.beginPath(); ctx.arc(cx, cy, 44, 0, Math.PI * 2); ctx.fillStyle = "#0e1a14"; ctx.fill();
-    ctx.font = "40px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("🍺", cx, cy + 2);
+    ctx.font = "40px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(S.pimmel ? "🍆" : "🍺", cx, cy + 2);
   }
   function spinWheel() {
     const g = S.g;
@@ -990,7 +992,8 @@
   }
 
   // ---------- Chat ----------
-  const REACTS = ["🍺", "😂", "🔥", "🤮", "👑", "❤️"];
+  const REACTS_BASE = ["🍺", "😂", "🔥", "🤮", "👑", "❤️"];
+  const reactList = () => (S.pimmel ? REACTS_BASE.slice(0, 5).concat("🍆") : REACTS_BASE);
   function chatItems(ev) {
     const evId = ev?.id || null;
     const msgs = S.messages.filter((m) => (m.evening_id || null) === evId).map((m) => ({ t: m.created_at, msg: m }));
@@ -1354,7 +1357,7 @@
       const m = byId(S.messages, el.dataset.id);
       if (!m) return;
       openSheet(`<h3>Reagieren</h3>
-        <div class="react-pick">${REACTS.map((e) => `<button data-act="react" data-id="${m.id}" data-e="${e}" class="${(m.reactions?.[e] || []).includes(S.me) ? "on" : ""}">${e}</button>`).join("")}</div>
+        <div class="react-pick">${reactList().map((e) => `<button data-act="react" data-id="${m.id}" data-e="${e}" class="${(m.reactions?.[e] || []).includes(S.me) ? "on" : ""}">${e}</button>`).join("")}</div>
         ${canDelete("messages", m) ? `<button class="btn ghost block" data-act="msg-del" data-id="${m.id}" style="color:var(--red)">Nachricht löschen</button>` : ""}
         <button class="btn ghost block" data-act="close">Schließen</button>`);
     },
@@ -1376,6 +1379,7 @@
       openSheet(`<h2>💬 ${esc(evName(ev))}</h2><div class="chat-list in-sheet">${chatHtml(chatItems(ev), true)}</div><button class="btn ghost block" data-act="open-evening" data-id="${ev.id}">‹ Zurück zum Abend</button>`);
     },
     "month-pick": (el) => { S.month = el.dataset.m; render(); },
+    "toggle-pimmel": () => { S.pimmel = !S.pimmel; store.set("bbb_pimmel", S.pimmel ? "1" : null); buzz(40); toast(S.pimmel ? "🍆 Pimmel-Modus an" : "Pimmel-Modus aus. Jugendfrei."); render(); },
     "confirm-yes": () => confirmSheet.cb && confirmSheet.cb(),
   };
 
