@@ -161,6 +161,43 @@ out body;`;
     return { d, ahead: ahead && dirOk, alert: ahead && dirOk && d <= dAlert };
   }
 
-  return { dist, bearing, angDiff, query, process, check };
+  // ---------- Tempolimits ----------
+  function parseMaxspeed(t, cls) {
+    const raw = t.maxspeed || t['maxspeed:forward'] || t['zone:maxspeed'] || t['maxspeed:type'] || t['source:maxspeed'];
+    if (!raw) return cls === 'living_street' ? 10 : null;
+    const v = String(raw).trim();
+    if (/^\d+$/.test(v)) return +v;
+    let m = v.match(/^(\d+)\s*mph$/i); if (m) return Math.round(+m[1] * 1.609);
+    if (/walk/i.test(v) || /living_street/i.test(v)) return 10;
+    if (/DE:urban/i.test(v)) return 50;
+    if (/DE:rural/i.test(v)) return 100;
+    if (/none|motorway/i.test(v)) return null;
+    m = v.match(/(\d+)/); return m ? +m[1] : null;
+  }
+  // Liefert Straßenstücke mit Tempolimit: [{v: 50, c: [lat,lon,lat,lon,...]}]
+  function speedSegments(data) {
+    const nodes = new Map(), out = [];
+    for (const el of data.elements) if (el.type === 'node') nodes.set(el.id, [el.lat, el.lon]);
+    for (const el of data.elements) {
+      if (el.type !== 'way' || !el.tags || !el.nodes) continue;
+      const v = parseMaxspeed(el.tags, el.tags.highway);
+      if (!v || v < 5 || v > 130) continue;
+      const c = [];
+      for (const id of el.nodes) { const p = nodes.get(id); if (p) c.push(Math.round(p[0] * 1e5) / 1e5, Math.round(p[1] * 1e5) / 1e5); }
+      if (c.length >= 4) out.push({ v, c });
+    }
+    return out;
+  }
+  // Abstand Punkt–Strecke in Metern (lokal flach gerechnet, reicht für < 1 km)
+  function segDist(p, a, b) {
+    const k = Math.cos(rad(p[0])) * 111320, ky = 110540;
+    const ax = (a[1] - p[1]) * k, ay = (a[0] - p[0]) * ky, bx = (b[1] - p[1]) * k, by = (b[0] - p[0]) * ky;
+    const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+    let t = l2 ? -(ax * dx + ay * dy) / l2 : 0; t = Math.max(0, Math.min(1, t));
+    const x = ax + t * dx, y = ay + t * dy;
+    return Math.sqrt(x * x + y * y);
+  }
+
+  return { dist, bearing, angDiff, query, process, check, parseMaxspeed, speedSegments, segDist };
 })();
 if (typeof module !== 'undefined') module.exports = Core;

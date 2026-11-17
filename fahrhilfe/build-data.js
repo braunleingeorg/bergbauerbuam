@@ -55,4 +55,8 @@ async function fetchOsm() {
   if (count.stop < 5 || count.rvl < 20) throw new Error('Unplausibel wenige Punkte – data.json wird nicht überschrieben');
   const out = { time: Date.now(), area: AREA, box: BOX, count, pois };
   fs.writeFileSync(path.join(__dirname, 'data.json'), JSON.stringify(out));
+  const segs = Core.speedSegments(osm);
+  const byV = {}; segs.forEach(s => byV[s.v] = (byV[s.v] || 0) + 1);
+  console.log('Tempolimit-Abschnitte:', segs.length, byV);
+  if (segs.length > 50) fs.writeFileSync(path.join(__dirname, 'speed.json'), JSON.stringify({ time: out.time, area: AREA, segs }));
 })().catch(e => { console.error(e); process.exit(1); });
