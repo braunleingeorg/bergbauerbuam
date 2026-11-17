@@ -81,6 +81,19 @@
 </div>
 
 <div class="card">
+  <h2>Während der Fahrt (für den Fahrlehrer)</h2>
+  <div class="row">
+    <button id="btnAddStop"><span class="dot" style="background:var(--stop)"></span>Stoppschild hier</button>
+    <button id="btnAddRvl"><span class="dot" style="background:var(--rvl)"></span>Rechts vor links hier</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button id="btnFalse">Fehlalarm – nie wieder</button>
+  </div>
+  <div class="hint" style="margin-top:8px">„… hier“ direkt an der Stelle drücken (z. B. an der Haltelinie). Die App merkt sich den Punkt und die Fahrtrichtung und warnt beim nächsten Mal.
+    „Fehlalarm“ blendet die zuletzt gemeldete Stelle dauerhaft aus. <span id="ownInfo"></span></div>
+</div>
+
+<div class="card">
   <h2>Kartendaten</h2>
   <div class="row">
     <button id="btnLoadTal">Tegernseer Tal + Hausham laden</button>
@@ -145,12 +158,11 @@
 <div class="card">
   <h2>Protokoll</h2>
   <div class="row">
-    <button id="btnMissed">Hier fehlte was</button>
-    <button id="btnFalse">Fehlalarm</button>
-  </div>
-  <div class="row" style="margin-top:8px">
     <button id="btnCopy">Protokoll kopieren</button>
     <button id="btnClearLog">Leeren</button>
+  </div>
+  <div class="row" style="margin-top:8px">
+    <button id="btnClearOwn">Eigene Punkte &amp; Ausblendungen löschen</button>
   </div>
   <div id="log"></div>
 </div>
@@ -189,7 +201,8 @@ const TYPES = {
   yield: { name: 'VORFAHRT ACHTEN', sub: 'Schild', color: '#ffd60a', say: 'Vorfahrt achten', hap: [0, 500, 1000], vib: [900], tones: [[660, .6]] }
 };
 
-let pois = [], grid = new Map(), running = false, watchId = null, wakeLock = null, audioCtx = null;
+let map = null, markerLayer = null, meMarker = null, simLine = null, simPts = [], simPicking = false, simTimer = null;
+let pois = [], basePois = [], baseMeta = null, lastAlertPoi = null, grid = new Map(), running = false, watchId = null, wakeLock = null, audioCtx = null;
 let last = null, anchor = null, alerted = new Map(), recent = [], logEntries = [];
 let settings = { vib: true, hap: true, snd: false, voc: false, stop: true, rvl: true, yield: false, lead: 7 };
 let lastFix = null;
@@ -225,6 +238,22 @@ function nearby(lat, lon) {
   }
   return out;
 }
+let personal = { add: [], hide: [] };
+function loadPersonal() { const p = store.get('fh_personal'); if (p && p.add && p.hide) personal = p; }
+function savePersonal() { store.set('fh_personal', personal); }
+function setBase(list, meta) {
+  basePois = list; baseMeta = meta;
+  store.set('fh_pois', { pois: list, meta });
+  applyPersonal();
+}
+function applyPersonal() {
+  const hidden = p => personal.hide.some(h => h.t === p.t && Math.abs(h.lat - p.lat) < 3e-5 && Math.abs(h.lon - p.lon) < 4e-5);
+  pois = basePois.filter(p => !hidden(p)).map(p => ({ t: p.t, lat: p.lat, lon: p.lon, a: p.a }))
+    .concat(personal.add.map(p => ({ t: p.t, lat: p.lat, lon: p.lon, a: p.a, own: true })));
+  buildGrid(); alerted.clear(); showDataStatus(baseMeta); renderMarkers();
+  $('ownInfo').textContent = (personal.add.length || personal.hide.length)
+    ? `Gespeichert: ${personal.add.length} eigene Punkte, ${personal.hide.length} ausgeblendet.` : '';
+}
 function showDataStatus(meta) {
   const c = { stop: 0, rvl: 0, yield: 0 };
   pois.forEach(p => c[p.t]++);
@@ -249,12 +278,7 @@ async function loadArea(box, areaName) {
       $('dataStatus').textContent = 'Werte Kreuzungen aus …';
       const data = await res.json();
       await new Promise(r => setTimeout(r, 30));
-      pois = Core.process(data);
-      buildGrid();
-      const meta = { time: Date.now(), area: areaName };
-      store.set('fh_pois', { pois, meta });
-      showDataStatus(meta);
-      renderMarkers();
+      setBase(Core.process(data), { time: Date.now(), area: areaName });
       setLoadButtons(false);
       return;
     } catch (e) { lastErr = e; }
@@ -272,11 +296,8 @@ async function loadBundled(userTriggered) {
     const d = await res.json();
     if (!d.pois || !d.pois.length) throw new Error('leer');
     const have = store.get('fh_pois');
-    if (userTriggered || !pois.length || !have || !have.meta || have.meta.area !== d.area || (have.meta.time || 0) < d.time) {
-      pois = d.pois; buildGrid();
-      const meta = { time: d.time, area: d.area };
-      store.set('fh_pois', { pois, meta });
-      showDataStatus(meta); renderMarkers();
+    if (userTriggered || !basePois.length || !have || !have.meta || have.meta.area !== d.area || (have.meta.time || 0) < d.time) {
+      setBase(d.pois, { time: d.time, area: d.area });
     }
     return true;
   } catch (e) {
@@ -298,7 +319,9 @@ $('btnLoadHere').onclick = () => {
   }, err => { $('dataStatus').textContent = 'Kein Standort: ' + err.message; }, { enableHighAccuracy: true, timeout: 20000 });
 };
 const cached = store.get('fh_pois');
-if (cached && cached.pois) { pois = cached.pois; buildGrid(); showDataStatus(cached.meta); }
+loadPersonal();
+if (cached && cached.pois) { basePois = cached.pois; baseMeta = cached.meta; }
+applyPersonal();
 loadBundled(false);
 
 /* ---------- Ausgabe: Vibration / Haptik / Ton / Sprache ---------- */
@@ -417,6 +440,7 @@ function handleFix(lat, lon, acc, gpsSpeed, gpsHead, ts) {
     if (recent.some(x => x.t === p.t && Core.dist([x.lat, x.lon], [p.lat, p.lon]) < 45)) continue;
     recent.push({ t: p.t, lat: p.lat, lon: p.lon, ts });
     signal(p.t);
+    lastAlertPoi = { p, ts };
     addLog(TYPES[p.t].sub + ' in ' + Math.round(r.d) + ' m', p.lat, p.lon, Math.round(speed * 3.6) + ' km/h');
   }
   setNext(best);
@@ -489,8 +513,34 @@ function renderLog() {
   }
 }
 logEntries = store.get('fh_log') || []; renderLog();
-$('btnMissed').onclick = () => lastFix ? addLog('⚠️ Hier fehlte eine Warnung', lastFix.lat, lastFix.lon) : addLog('⚠️ Hier fehlte eine Warnung (kein GPS)');
-$('btnFalse').onclick = () => lastFix ? addLog('❌ Fehlalarm', lastFix.lat, lastFix.lon) : addLog('❌ Fehlalarm (kein GPS)');
+function flashBtn(id, txt) { const b = $(id), o = b.innerHTML; b.textContent = txt; setTimeout(() => b.innerHTML = o, 1800); }
+function addOwn(t, id) {
+  if (!lastFix) { flashBtn(id, 'Kein GPS – erst Start drücken'); return; }
+  const h = (last && last.head != null) ? last.head : lastFix.heading;
+  personal.add.push({ t, lat: +lastFix.lat.toFixed(6), lon: +lastFix.lon.toFixed(6), a: h != null ? [Math.round(h)] : [] });
+  savePersonal(); applyPersonal();
+  addLog('➕ ' + (t === 'stop' ? 'Stoppschild' : 'Rechts vor links') + ' gespeichert', lastFix.lat, lastFix.lon);
+  flashBtn(id, 'Gespeichert ✓');
+}
+$('btnAddStop').onclick = () => addOwn('stop', 'btnAddStop');
+$('btnAddRvl').onclick = () => addOwn('rvl', 'btnAddRvl');
+$('btnFalse').onclick = () => {
+  if (!lastAlertPoi || Date.now() - lastAlertPoi.ts > 120000 && !simTimer) {
+    if (lastFix) addLog('❌ Fehlalarm (nichts zum Ausblenden)', lastFix.lat, lastFix.lon);
+    flashBtn('btnFalse', 'Keine Warnung in den letzten 2 Min.'); return;
+  }
+  const p = lastAlertPoi.p;
+  if (p.own) personal.add = personal.add.filter(q => !(q.t === p.t && q.lat === p.lat && q.lon === p.lon));
+  else personal.hide.push({ t: p.t, lat: p.lat, lon: p.lon });
+  savePersonal(); applyPersonal(); lastAlertPoi = null;
+  addLog('❌ Fehlalarm ausgeblendet: ' + TYPES[p.t].sub, p.lat, p.lon);
+  flashBtn('btnFalse', 'Ausgeblendet ✓');
+};
+$('btnClearOwn').onclick = () => {
+  if ($('btnClearOwn').dataset.sure !== '1') { $('btnClearOwn').dataset.sure = '1'; $('btnClearOwn').textContent = 'Wirklich löschen? Nochmal tippen'; setTimeout(() => { $('btnClearOwn').dataset.sure = ''; $('btnClearOwn').innerHTML = 'Eigene Punkte &amp; Ausblendungen löschen'; }, 3000); return; }
+  personal = { add: [], hide: [] }; savePersonal(); applyPersonal();
+  $('btnClearOwn').dataset.sure = ''; $('btnClearOwn').innerHTML = 'Eigene Punkte &amp; Ausblendungen löschen';
+};
 $('btnClearLog').onclick = () => { logEntries = []; store.set('fh_log', logEntries); renderLog(); };
 $('btnCopy').onclick = async () => {
   const text = logEntries.slice().reverse().map(e => `${e.t}\t${e.msg}${e.extra ? '\t' + e.extra : ''}${e.lat != null ? `\thttps://www.openstreetmap.org/?mlat=${e.lat.toFixed(5)}&mlon=${e.lon.toFixed(5)}#map=18/${e.lat.toFixed(5)}/${e.lon.toFixed(5)}` : ''}`).join('\n');
@@ -500,7 +550,6 @@ $('btnCopy').onclick = async () => {
 };
 
 /* ---------- Karte & Simulation ---------- */
-let map = null, markerLayer = null, meMarker = null, simLine = null, simPts = [], simPicking = false, simTimer = null;
 function initMap() {
   if (map || typeof L === 'undefined') return;
   const c = lastFix ? [lastFix.lat, lastFix.lon] : [47.705, 11.755];
