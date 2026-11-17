@@ -1,6 +1,6 @@
 // Service Worker der Fahrhilfe: zeigt Mitteilungen (= Vibration auf dem iPhone)
 // und hält die App auch bei schlechtem Netz verfügbar.
-const CACHE = 'fahrhilfe-v4';
+const CACHE = 'fahrhilfe-v5';
 const SHELL = ['./', 'index.html', 'core.js', 'data.json', 'manifest.webmanifest', 'icon-192.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).catch(() => {}).then(() => self.skipWaiting()));
