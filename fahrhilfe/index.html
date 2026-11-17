@@ -119,7 +119,7 @@
     <button id="tYield"><span class="dot" style="background:var(--yield)"></span>Vorfahrt achten</button>
   </div>
   <div class="hint" style="margin-top:8px">
-    iPhone: Jede Warnung kommt als Mitteilung und vibriert einmal (Text auf dem Sperrbildschirm sagt, was es ist).<br>
+    iPhone: <b>Stoppschild = 3× vibrieren</b> · <b>Rechts vor links = 1×</b> · Vorfahrt achten = 2×. Kein Ton, solange das iPhone auf lautlos steht.<br>
     Zusätzlich prüfen: Klappt es auch ohne Antippen? Dafür unten die Simulation starten.
   </div>
   <div class="hint" id="diag" style="margin-top:8px"></div>
@@ -402,7 +402,7 @@ function updateSetup() {
     html = '1. Unten in Safari auf <b>Teilen</b> (Quadrat mit Pfeil) tippen<br>2. <b>„Zum Home-Bildschirm“</b> wählen<br>3. Die App über das neue <b>Fahrhilfe-Icon</b> öffnen und hier „Mitteilungen erlauben“ tippen.<br>Nur so darf die App dein iPhone vibrieren lassen.';
     $('btnNtf').style.display = 'none';
   } else if (perm === 'granted') {
-    html = '✅ Mitteilungen sind erlaubt. Drück einen Test-Knopf: Das iPhone sollte jetzt vibrieren. Tipp: iPhone auf <b>lautlos</b> stellen, dann vibriert es nur, ohne Ton.';
+    html = '✅ Mitteilungen sind erlaubt. Stell das iPhone auf <b>lautlos</b> (Schalter/Aktionstaste an der Seite), dann gibt es keinen Ton, nur Vibration. Drück einen Test-Knopf: Stoppschild = 3×, Rechts vor links = 1×.';
     $('btnNtf').style.display = 'none';
   } else if (perm === 'denied') {
     html = '❌ Mitteilungen sind blockiert. Einstellungen → Mitteilungen → Fahrhilfe → Mitteilungen erlauben.';
@@ -421,14 +421,19 @@ $('btnNtf').onclick = async () => {
   try { await Notification.requestPermission(); } catch (e) {}
   updateSetup();
 };
+// Unterscheidung über die Anzahl: Stopp = 3× vibrieren, Rechts vor links = 1×, Vorfahrt achten = 2×
 function notifyVibrate(T) {
   if (!settings.ntf || ntfPermission() !== 'granted') return;
   const title = T.name === 'RECHTS VOR LINKS' ? '⚠️ Rechts vor links' : T.name === 'STOPP' ? '🛑 Stoppschild' : '⚠️ Vorfahrt achten';
-  try {
-    if (navigator.serviceWorker && navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage({ type: 'notify', title });
-    else if (swReg) swReg.showNotification(title, { tag: 'fahrhilfe-' + Date.now(), silent: false });
-    else new Notification(title);
-  } catch (e) {}
+  const n = T.name === 'STOPP' ? 3 : T.name === 'RECHTS VOR LINKS' ? 1 : 2;
+  const one = k => {
+    try {
+      if (navigator.serviceWorker && navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage({ type: 'notify', title });
+      else if (swReg) swReg.showNotification(title, { tag: 'fahrhilfe-' + Date.now() + '-' + k, silent: false });
+      else new Notification(title);
+    } catch (e) {}
+  };
+  for (let k = 0; k < n; k++) setTimeout(() => one(k), k * 1400);
 }
 updateSetup();
 
