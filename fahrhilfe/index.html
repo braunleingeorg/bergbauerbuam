@@ -741,7 +741,9 @@ function handleFix(lat, lon, acc, gpsSpeed, gpsHead, ts) {
   let speed = (gpsSpeed != null && !isNaN(gpsSpeed) && gpsSpeed >= 0) ? gpsSpeed : null;
   let heading = null;
   if (!anchor) anchor = { p: cur, ts };
-  const moved = Core.dist(anchor.p, cur);
+  let moved = Core.dist(anchor.p, cur);
+  // GPS-Sprung (unmöglich schnell): neu ansetzen statt Fantasie-Tempo zu berechnen
+  if (moved > 60 && moved / Math.max(0.5, (ts - anchor.ts) / 1000) > 70) { anchor = { p: cur, ts }; last = null; moved = 0; curLimit = null; if (speed != null && speed > 70) speed = 0; }
   if (moved >= 6) {
     const dt = (ts - anchor.ts) / 1000;
     if (speed == null && dt > 0) speed = moved / dt;
@@ -828,7 +830,7 @@ async function start() {
     handleFix(c.latitude, c.longitude, c.accuracy, c.speed, c.heading, pos.timestamp || Date.now());
   }, err => {
     if (err.code === 1) toast('Standort verweigert – Einstellungen → Datenschutz → Ortungsdienste → Safari/Fahrhilfe', 5000);
-    else if (err.code === 2) toast('Kein GPS-Empfang', 2500);
+    else if (err.code === 2 && (!lastFix || Date.now() - lastFix.ts > 15000)) toast('Kein GPS-Empfang', 2500);
   }, { enableHighAccuracy: true, maximumAge: 0 });
   setNext(null); addLog('Start');
 }
@@ -956,7 +958,7 @@ function updateSpeedLimit(cur, speed, heading, ts) {
   if (!settings.spd) return;
   if (over) {
     if (overSince == null) overSince = ts;
-    if (session) { session.overMax = Math.max(session.overMax || 0, Math.round(kmh - curLimit)); }
+    if (session && kmh < 200) { session.overMax = Math.max(session.overMax || 0, Math.round(kmh - curLimit)); }
     // erst nach 3 Sekunden zu schnell melden, dann höchstens jede Minute erneut
     if (ts - overSince >= 3000 && (overArmed || ts - lastSpeedAlert > 60000)) {
       overArmed = false; lastSpeedAlert = ts;
@@ -1008,7 +1010,8 @@ function trackSession(cur, speed, acc, ts) {
   if (!session.lastPt) { session.lastPt = cur; trail(cur); }
   else {
     const d = Core.dist(session.lastPt, cur);
-    if (d >= 4 && d < 400) { session.dist += d; session.lastPt = cur; trail(cur); }
+    if (d >= 400) { session.lastPt = cur; } // GPS-Sprung: neu ansetzen, nicht mitzählen
+    else if (d >= 4) { session.dist += d; session.lastPt = cur; trail(cur); }
   }
   const kmh = speed * 3.6;
   if (kmh > session.maxV && kmh < 220) session.maxV = kmh;
