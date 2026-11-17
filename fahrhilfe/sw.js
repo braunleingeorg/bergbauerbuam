@@ -1,6 +1,6 @@
 // Service Worker der Fahrhilfe: zeigt Mitteilungen (= Vibration auf dem iPhone)
 // und hält die App auch bei schlechtem Netz verfügbar.
-const CACHE = 'fahrhilfe-v2';
+const CACHE = 'fahrhilfe-v4';
 const SHELL = ['./', 'index.html', 'core.js', 'data.json', 'manifest.webmanifest', 'icon-192.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).catch(() => {}).then(() => self.skipWaiting()));
@@ -20,7 +20,7 @@ self.addEventListener('fetch', e => {
 self.addEventListener('message', e => {
   const d = e.data || {};
   if (d.type === 'notify') {
-    e.waitUntil(self.registration.showNotification(d.title, { body: d.body || '', tag: 'fahrhilfe-' + Date.now(), silent: false, icon: 'icon-192.png' })
+    e.waitUntil(new Promise(r => setTimeout(r, d.delay || 0)).then(() => self.registration.showNotification(d.title, { body: d.body || 'Fahrhilfe', tag: 'fahrhilfe-' + Date.now(), silent: false, icon: 'icon-192.png' }))
       .then(() => new Promise(r => setTimeout(r, 4000)))
       .then(() => self.registration.getNotifications())
       .then(ns => ns.forEach(n => n.close())));

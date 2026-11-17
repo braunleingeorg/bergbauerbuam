@@ -2,10 +2,11 @@
 <html lang="de">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#0b0f14">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#07090d">
 <title>Fahrhilfe Tegernsee</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -14,223 +15,335 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
   :root{
-    --bg:#0b0f14; --card:#151b23; --line:#263040; --text:#e8edf3; --muted:#8b97a7;
-    --stop:#e5484d; --rvl:#f5a524; --yield:#ffd60a; --ok:#30a46c; --accent:#3e7bfa;
+    --bg:#07090d; --glass:rgba(14,18,26,.78); --glass2:rgba(22,28,40,.92); --line:rgba(255,255,255,.09);
+    --text:#eef2f7; --muted:#8a96a8; --stop:#ff3b3b; --rvl:#ff9f1a; --yield:#ffd60a; --ok:#22c55e; --accent:#4f8cff;
+    --top:env(safe-area-inset-top); --bot:env(safe-area-inset-bottom);
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html,body{margin:0;background:var(--bg);color:var(--text);
-    font:16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-  body{padding:calc(env(safe-area-inset-top) + 12px) 14px calc(env(safe-area-inset-bottom) + 24px)}
-  h1{font-size:20px;margin:0 0 2px}
-  .sub{color:var(--muted);font-size:13px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-top:12px}
-  .card h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0 0 10px}
-  button{font:inherit;color:var(--text);background:#202836;border:1px solid var(--line);
-    border-radius:12px;padding:12px 14px;cursor:pointer}
-  button:active{transform:scale(.98)}
-  button:disabled{opacity:.45}
-  .big{width:100%;font-size:20px;font-weight:700;padding:18px;border:none}
-  .go{background:var(--ok)} .halt{background:var(--stop)}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--text);
+    font:16px/1.35 -apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",Roboto,sans-serif;
+    -webkit-user-select:none;user-select:none}
+  button{font:inherit;color:inherit;border:none;background:none;cursor:pointer}
+  button:active{transform:scale(.96)}
+  .glass{background:var(--glass);backdrop-filter:blur(18px) saturate(1.4);-webkit-backdrop-filter:blur(18px) saturate(1.4);
+    border:1px solid var(--line);box-shadow:0 10px 30px rgba(0,0,0,.45)}
+  .hidden{display:none!important}
+
+  /* ---------- Karte ---------- */
+  #map{position:fixed;inset:0;background:#0b0e13}
+  .leaflet-container{background:#0b0e13;font:inherit}
+  .leaflet-control-attribution{background:rgba(0,0,0,.45)!important;color:#667!important;font-size:9px!important}
+  .leaflet-control-attribution a{color:#889!important}
+  .leaflet-control-zoom{display:none}
+  .no-map{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);text-align:center;padding:40px}
+
+  /* Auto */
+  .car{width:56px;height:56px;margin:-28px 0 0 -28px;position:relative}
+  .car .rot{position:absolute;inset:0;transition:transform .45s ease-out}
+  .car svg{width:56px;height:56px;filter:drop-shadow(0 0 10px rgba(79,140,255,.85)) drop-shadow(0 4px 6px rgba(0,0,0,.6))}
+  .car.idle svg{filter:drop-shadow(0 0 6px rgba(79,140,255,.5)) drop-shadow(0 4px 6px rgba(0,0,0,.6))}
+
+  /* Verkehrszeichen */
+  .sign{position:relative;transform:translate(-50%,-50%)}
+  .sign svg{display:block;filter:drop-shadow(0 2px 4px rgba(0,0,0,.7))}
+  .sign.hot::before{content:"";position:absolute;inset:-10px;border-radius:50%;background:radial-gradient(circle,var(--c) 0%,transparent 70%);
+    animation:pulse 1.1s ease-out infinite;opacity:.8}
+  .sign.own::after{content:"";position:absolute;right:-4px;top:-4px;width:9px;height:9px;border-radius:50%;background:var(--accent);border:2px solid #fff}
+  @keyframes pulse{0%{transform:scale(.6);opacity:.9}100%{transform:scale(1.8);opacity:0}}
+
+  /* ---------- HUD oben ---------- */
+  #hud{position:fixed;left:10px;right:10px;top:calc(var(--top) + 8px);z-index:900;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+  #nextCard{pointer-events:auto;border-radius:22px;padding:12px 14px;display:flex;align-items:center;gap:14px;position:relative;overflow:hidden;
+    transition:box-shadow .3s, border-color .3s}
+  #nextCard.on{border-color:var(--c);box-shadow:0 0 0 1px var(--c),0 0 28px -4px var(--c),0 10px 30px rgba(0,0,0,.5)}
+  #nextIcon{width:46px;height:46px;flex:0 0 46px;display:flex;align-items:center;justify-content:center;border-radius:14px;background:rgba(255,255,255,.06)}
+  #nextTitle{font-size:20px;font-weight:800;letter-spacing:-.01em}
+  #nextDist{font-size:14px;color:var(--muted);margin-top:1px}
+  #nextCard.on #nextDist{color:var(--text)}
+  #nextBig{margin-left:auto;font-size:30px;font-weight:900;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+  #nextBig small{font-size:15px;font-weight:700;color:var(--muted);margin-left:2px}
+  #nextBar{position:absolute;left:0;bottom:0;height:3px;background:var(--c);width:0;transition:width .5s linear}
+  #chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{pointer-events:auto;font-size:12px;font-weight:600;padding:6px 10px;border-radius:999px;display:inline-flex;align-items:center;gap:6px}
+  .chip i{width:8px;height:8px;border-radius:50%;background:var(--muted);display:inline-block}
+  .chip.warn{color:#111;background:var(--yield);border-color:transparent}
+
+  /* ---------- Knöpfe rechts ---------- */
+  #fabs{position:fixed;right:10px;z-index:900;display:flex;flex-direction:column;gap:10px;bottom:calc(var(--bot) + 120px)}
+  .fab{width:50px;height:50px;border-radius:16px;display:flex;align-items:center;justify-content:center}
+  .fab svg{width:24px;height:24px}
+  .fab.active{color:var(--accent)}
+
+  /* ---------- Unten ---------- */
+  #quick{position:fixed;left:10px;right:72px;z-index:900;display:flex;gap:8px;bottom:calc(var(--bot) + 104px)}
+  #quick button{flex:1;padding:10px 6px;border-radius:14px;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:6px}
+  #bottom{position:fixed;left:10px;right:10px;bottom:calc(var(--bot) + 10px);z-index:900;border-radius:26px;padding:10px 10px 10px 18px;
+    display:flex;align-items:center;gap:10px;height:84px}
+  .speed{display:flex;flex-direction:column;align-items:flex-start;min-width:74px}
+  .speed b{font-size:38px;font-weight:900;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.03em}
+  .speed span{font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.08em;text-transform:uppercase}
+  #btnStart{flex:1;height:62px;border-radius:20px;font-size:20px;font-weight:800;letter-spacing:.01em;
+    background:linear-gradient(180deg,#2bd56a,#16a34a);box-shadow:0 6px 20px -6px rgba(34,197,94,.8);color:#04150a}
+  #btnStart.halt{background:linear-gradient(180deg,#ff5a5a,#e11d1d);box-shadow:0 6px 20px -6px rgba(255,59,59,.8);color:#fff}
+  #btnPocket{width:62px;height:62px;border-radius:20px;background:rgba(255,255,255,.08);display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:var(--muted);gap:3px}
+  #btnPocket svg{width:22px;height:22px;color:var(--text)}
+
+  /* Simulation */
+  #simBar{position:fixed;left:10px;right:10px;z-index:950;bottom:calc(var(--bot) + 104px);border-radius:18px;padding:12px;display:flex;align-items:center;gap:8px}
+  #simBar span{flex:1;font-size:14px}
+  #simBar button{padding:10px 14px;border-radius:12px;background:rgba(255,255,255,.1);font-weight:700;font-size:14px}
+  #simBar button.primary{background:var(--accent);color:#fff}
+
+  /* ---------- Menü ---------- */
+  #backdrop{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1200;opacity:0;pointer-events:none;transition:opacity .25s}
+  #backdrop.open{opacity:1;pointer-events:auto}
+  #sheet{position:fixed;left:0;right:0;bottom:0;z-index:1300;max-height:88vh;overflow:auto;-webkit-overflow-scrolling:touch;
+    background:var(--glass2);backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);border-top:1px solid var(--line);
+    border-radius:26px 26px 0 0;padding:8px 16px calc(var(--bot) + 24px);transform:translateY(105%);transition:transform .3s cubic-bezier(.2,.8,.2,1);
+    -webkit-user-select:text;user-select:text}
+  #sheet.open{transform:none}
+  .grab{width:40px;height:5px;border-radius:3px;background:rgba(255,255,255,.25);margin:4px auto 10px}
+  .sheetHead{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+  .sheetHead h1{font-size:22px;margin:0}
+  .x{width:36px;height:36px;border-radius:50%;background:rgba(255,255,255,.1);font-size:18px}
+  .sec{background:rgba(255,255,255,.04);border:1px solid var(--line);border-radius:18px;padding:14px;margin-top:12px}
+  .sec h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 10px}
+  .btn{padding:12px 14px;border-radius:14px;background:rgba(255,255,255,.09);font-weight:600;font-size:15px}
+  .btn.primary{background:var(--accent);color:#fff}
   .row{display:flex;gap:8px;flex-wrap:wrap}
-  .row>button{flex:1 1 0;min-width:0}
-  .next{font-size:22px;font-weight:700;margin:4px 0 6px}
-  .stat{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
-  .stat div{background:#0f141b;border-radius:10px;padding:8px;text-align:center}
-  .stat b{display:block;font-size:18px}
-  .stat span{font-size:11px;color:var(--muted)}
-  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
-  label.opt{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line)}
-  label.opt:last-child{border-bottom:none}
-  label.opt small{display:block;color:var(--muted);font-size:12px}
-  input[type=checkbox]{width:22px;height:22px;accent-color:var(--accent)}
-  input[type=range]{width:100%;accent-color:var(--accent)}
-  #map{height:340px;border-radius:12px;margin-top:10px;background:#0f141b}
-  #log{max-height:260px;overflow:auto;font-size:13px;margin-top:10px}
-  #log div{padding:6px 0;border-bottom:1px solid var(--line)}
-  .warn{color:var(--rvl);font-size:13px;margin-top:6px}
+  .row>.btn{flex:1 1 0;min-width:0}
   .hint{color:var(--muted);font-size:13px}
-  #flash{position:fixed;inset:0;z-index:2000;display:none;align-items:center;justify-content:center;
-    flex-direction:column;text-align:center;font-size:44px;font-weight:900;color:#000;padding:20px}
-  #flash small{font-size:22px;font-weight:600;margin-top:10px}
-  #pocket{position:fixed;inset:0;z-index:1500;background:#000;display:none;align-items:center;
-    justify-content:center;flex-direction:column;color:#333;font-size:15px;text-align:center;padding:30px;
-    user-select:none;-webkit-user-select:none;touch-action:none}
-  #pocket .pnext{color:#555;font-size:20px;margin-bottom:16px}
-  #pocketRing{width:70px;height:70px;border-radius:50%;border:3px solid #222;margin-top:20px;transition:border-color .2s}
-  .hidden-haptic{position:fixed;left:-200px;top:-200px;opacity:0;pointer-events:none}
+  label.opt{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
+  label.opt:last-of-type{border-bottom:none}
+  label.opt small{display:block;color:var(--muted);font-size:12px}
+  input[type=checkbox]{width:24px;height:24px;accent-color:var(--accent);flex:0 0 auto}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  #log{max-height:240px;overflow:auto;font-size:12.5px;margin-top:10px;font-variant-numeric:tabular-nums}
+  #log div{padding:6px 0;border-bottom:1px solid var(--line)}
+  .dot{display:inline-block;width:10px;height:10px;border-radius:50%;vertical-align:middle}
   a{color:#7aa7ff}
+
+  /* ---------- Warn-Blitz ---------- */
+  #flash{position:fixed;inset:0;z-index:2000;display:none;align-items:center;justify-content:center;flex-direction:column;text-align:center;
+    background:radial-gradient(circle at 50% 45%,var(--c) 0%,rgba(0,0,0,.92) 75%);padding:30px;animation:fin .2s ease-out}
+  #flash .fi{width:150px;height:150px;margin-bottom:18px;filter:drop-shadow(0 0 30px var(--c))}
+  #flash b{font-size:38px;font-weight:900;letter-spacing:-.01em;text-shadow:0 2px 20px rgba(0,0,0,.6)}
+  #flash small{font-size:18px;color:rgba(255,255,255,.8);margin-top:8px}
+  @keyframes fin{from{opacity:0;transform:scale(1.05)}to{opacity:1;transform:none}}
+
+  /* ---------- Taschenmodus ---------- */
+  #pocket{position:fixed;inset:0;z-index:1500;background:#000;display:none;align-items:center;justify-content:center;flex-direction:column;
+    color:#3a3a3a;font-size:15px;text-align:center;padding:30px;touch-action:none}
+  #pocket .pnext{color:#666;font-size:22px;font-weight:700;margin-bottom:16px;min-height:28px}
+  #pocketRing{width:74px;height:74px;border-radius:50%;border:3px solid #1d1d1d;margin-top:22px;transition:border-color .2s}
+
+  #toast{position:fixed;left:50%;bottom:calc(var(--bot) + 110px);transform:translateX(-50%);z-index:1800;padding:10px 16px;border-radius:14px;
+    font-size:14px;font-weight:600;opacity:0;transition:opacity .25s;pointer-events:none;max-width:86vw;text-align:center}
+  #toast.show{opacity:1}
 </style>
 </head>
 <body>
 
-<h1>Fahrhilfe Tegernsee</h1>
-<div class="sub" id="dataStatus">Noch keine Kartendaten geladen.</div>
+<div id="map"></div>
 
-<div class="card">
-  <div class="sub" id="runState">Bereit</div>
-  <div class="next" id="nextPoi">–</div>
-  <div class="stat">
-    <div><b id="sSpeed">–</b><span>km/h</span></div>
-    <div><b id="sAcc">–</b><span>GPS-Genauigkeit (m)</span></div>
-    <div><b id="sHead">–</b><span>Richtung</span></div>
-  </div>
-  <div class="warn" id="gpsWarn"></div>
-  <div style="margin-top:12px">
-    <button class="big go" id="btnStart">Start</button>
-  </div>
-  <div class="row" style="margin-top:8px">
-    <button id="btnPocket">Taschenmodus</button>
-  </div>
-</div>
-
-<div class="card">
-  <h2>Während der Fahrt (für den Fahrlehrer)</h2>
-  <div class="row">
-    <button id="btnAddStop"><span class="dot" style="background:var(--stop)"></span>Stoppschild hier</button>
-    <button id="btnAddRvl"><span class="dot" style="background:var(--rvl)"></span>Rechts vor links hier</button>
-  </div>
-  <div class="row" style="margin-top:8px">
-    <button id="btnFalse">Fehlalarm – nie wieder</button>
-  </div>
-  <div class="hint" style="margin-top:8px">„… hier“ direkt an der Stelle drücken (z. B. an der Haltelinie). Die App merkt sich den Punkt und die Fahrtrichtung und warnt beim nächsten Mal.
-    „Fehlalarm“ blendet die zuletzt gemeldete Stelle dauerhaft aus. <span id="ownInfo"></span></div>
-</div>
-
-<div class="card">
-  <h2>Kartendaten</h2>
-  <div class="row">
-    <button id="btnLoadTal">Tegernseer Tal + Hausham laden</button>
-    <button id="btnLoadHere">Um meinen Standort (±5 km)</button>
-  </div>
-  <div class="hint" style="margin-top:8px">Die Daten fürs Tal lädt die App beim Öffnen automatisch und speichert sie auf dem Handy.</div>
-</div>
-
-<div class="card" id="setupCard">
-  <h2>iPhone-Vibration einrichten</h2>
-  <div id="setupText" class="hint"></div>
-  <div class="row" style="margin-top:10px"><button id="btnNtf">Mitteilungen erlauben</button></div>
-</div>
-
-<div class="card">
-  <h2>Test</h2>
-  <div class="row">
-    <button id="tStop"><span class="dot" style="background:var(--stop)"></span>Stopp</button>
-    <button id="tRvl"><span class="dot" style="background:var(--rvl)"></span>Rechts vor links</button>
-    <button id="tYield"><span class="dot" style="background:var(--yield)"></span>Vorfahrt achten</button>
-  </div>
-  <div class="hint" style="margin-top:8px">
-    iPhone: <b>Stoppschild = 3× vibrieren</b> · <b>Rechts vor links = 1×</b> · Vorfahrt achten = 2×. Kein Ton, solange das iPhone auf lautlos steht.<br>
-    Zusätzlich prüfen: Klappt es auch ohne Antippen? Dafür unten die Simulation starten.
-  </div>
-  <div class="hint" id="diag" style="margin-top:8px"></div>
-</div>
-
-<div class="card">
-  <h2>Einstellungen</h2>
-  <label class="opt"><span>Vibration<small>Android: echte Vibration. iPhone: siehe unten.</small></span><input type="checkbox" id="oVib" checked></label>
-  <label class="opt"><span>Mitteilung (iPhone-Vibration)<small>Nur wenn die App vom Home-Bildschirm geöffnet ist</small></span><input type="checkbox" id="oNtf" checked></label>
-  <label class="opt"><span>iPhone-Haptik (alt)<small>Nur bis iOS 26.4, von Apple abgeschaltet</small></span><input type="checkbox" id="oHap" checked></label>
-  <label class="opt"><span>Signalton</span><input type="checkbox" id="oSnd"></label>
-  <label class="opt"><span>Sprachansage<small>z. B. „Rechts vor links“</small></span><input type="checkbox" id="oVoc"></label>
-  <label class="opt"><span>Stoppschilder</span><input type="checkbox" id="oStop" checked></label>
-  <label class="opt"><span>Rechts vor links</span><input type="checkbox" id="oRvl" checked></label>
-  <label class="opt"><span>„Vorfahrt achten“-Schilder</span><input type="checkbox" id="oYield"></label>
-  <div style="padding-top:10px">
-    <div>Vorwarnung: <b id="leadVal">7</b> Sekunden vorher</div>
-    <input type="range" id="oLead" min="3" max="12" step="1" value="7">
-    <div class="hint">Bei 30 km/h sind 7 s etwa 60 m, bei 50 km/h etwa 100 m.</div>
-  </div>
-</div>
-
-<div class="card">
-  <h2>Karte &amp; Simulation</h2>
-  <div class="row">
-    <button id="btnMap">Karte zeigen</button>
-  </div>
-  <div id="mapWrap" style="display:none">
-    <div id="map"></div>
-    <div class="hint" style="margin-top:8px">
-      <span class="dot" style="background:var(--stop)"></span>Stopp
-      <span class="dot" style="background:var(--rvl);margin-left:10px"></span>Rechts vor links
-      <span class="dot" style="background:var(--yield);margin-left:10px"></span>Vorfahrt achten
+<!-- HUD -->
+<div id="hud">
+  <div id="nextCard" class="glass">
+    <div id="nextIcon"></div>
+    <div style="min-width:0">
+      <div id="nextTitle">Freie Fahrt</div>
+      <div id="nextDist">Drück Start, wenn's losgeht</div>
     </div>
-    <div class="row" style="margin-top:10px">
-      <button id="simPick">Route antippen</button>
-      <button id="simRun">Simulation starten</button>
-      <button id="simClear">Löschen</button>
+    <div id="nextBig"></div>
+    <div id="nextBar"></div>
+  </div>
+  <div id="chips">
+    <span class="chip glass" id="chipGps"><i></i><span>GPS aus</span></span>
+    <span class="chip glass" id="chipData">Lade Karte …</span>
+    <span class="chip warn hidden" id="chipSetup">📳 Vibration einrichten</span>
+  </div>
+</div>
+
+<!-- Knöpfe rechts -->
+<div id="fabs">
+  <button class="fab glass active" id="btnFollow" aria-label="Auf mich zentrieren">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 2.5 19.5 21 12 16.8 4.5 21z" fill="currentColor" stroke="none"/></svg>
+  </button>
+  <button class="fab glass" id="btnMenu" aria-label="Menü">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+</div>
+
+<!-- Für den Fahrlehrer -->
+<div id="quick" class="hidden">
+  <button class="glass" id="btnAddStop"><span class="dot" style="background:var(--stop)"></span>+ Stopp</button>
+  <button class="glass" id="btnAddRvl"><span class="dot" style="background:var(--rvl)"></span>+ R-v-L</button>
+  <button class="glass" id="btnFalse">✕ Fehlalarm</button>
+</div>
+
+<div id="simBar" class="glass hidden">
+  <span id="simText">Tippe Punkte entlang der Straße</span>
+  <button class="primary" id="simRun">Los</button>
+  <button id="simCancel">Abbrechen</button>
+</div>
+
+<div id="bottom" class="glass">
+  <div class="speed"><b id="sSpeed">0</b><span>km/h</span></div>
+  <button id="btnStart">Start</button>
+  <button id="btnPocket">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="2.5" width="12" height="19" rx="3"/><path d="M10 18.5h4"/></svg>
+    Tasche
+  </button>
+</div>
+
+<!-- Menü -->
+<div id="backdrop"></div>
+<div id="sheet" aria-hidden="true">
+  <div class="grab"></div>
+  <div class="sheetHead"><h1>Fahrhilfe</h1><button class="x" id="btnClose">✕</button></div>
+  <div class="hint" id="dataStatus">Noch keine Kartendaten geladen.</div>
+
+  <div class="sec" id="setupCard">
+    <h2>iPhone-Vibration einrichten</h2>
+    <div id="setupText" class="hint"></div>
+    <div class="row" style="margin-top:10px"><button class="btn primary" id="btnNtf">Mitteilungen erlauben</button></div>
+    <div class="row" style="margin-top:8px"><button class="btn" id="btnNtfLater">Test: Mitteilung in 5 Sekunden</button></div>
+    <div class="hint" style="margin-top:6px">Tippen, dann sofort das iPhone sperren. Vibriert es dann? Wenn ja, zeigt iOS Mitteilungen nur nicht, solange die App offen ist.</div>
+  </div>
+
+  <div class="sec">
+    <h2>Test</h2>
+    <div class="row">
+      <button class="btn" id="tStop"><span class="dot" style="background:var(--stop)"></span> Stopp</button>
+      <button class="btn" id="tRvl"><span class="dot" style="background:var(--rvl)"></span> R-v-L</button>
+      <button class="btn" id="tYield"><span class="dot" style="background:var(--yield)"></span> Vorfahrt</button>
     </div>
-    <div style="margin-top:8px">Sim-Tempo: <b id="simVal">30</b> km/h
-      <input type="range" id="simSpeed" min="10" max="70" step="5" value="30"></div>
-    <div class="hint">Zum Ausprobieren zu Hause: „Route antippen“, dann auf der Karte eine Strecke entlang der Straße antippen und „Simulation starten“.</div>
+    <div class="hint" style="margin-top:8px">iPhone: <b>Stoppschild = 3× vibrieren</b> · <b>Rechts vor links = 1×</b> · Vorfahrt achten = 2×. Kein Ton, solange das iPhone auf lautlos steht.</div>
+    <div class="hint" id="diag" style="margin-top:8px"></div>
+  </div>
+
+  <div class="sec">
+    <h2>Simulation (zu Hause testen)</h2>
+    <div class="row"><button class="btn" id="simPick">Route auf der Karte antippen</button></div>
+    <div style="margin-top:10px">Tempo: <b id="simVal">30</b> km/h <input type="range" id="simSpeed" min="10" max="70" step="5" value="30"></div>
+  </div>
+
+  <div class="sec">
+    <h2>Einstellungen</h2>
+    <label class="opt"><span>Mitteilung (iPhone-Vibration)<small>Nur wenn die App vom Home-Bildschirm geöffnet ist</small></span><input type="checkbox" id="oNtf"></label>
+    <label class="opt"><span>Vibration (Android)</span><input type="checkbox" id="oVib"></label>
+    <label class="opt"><span>iPhone-Haptik (alt)<small>Nur bis iOS 26.4, von Apple abgeschaltet</small></span><input type="checkbox" id="oHap"></label>
+    <label class="opt"><span>Signalton</span><input type="checkbox" id="oSnd"></label>
+    <label class="opt"><span>Sprachansage</span><input type="checkbox" id="oVoc"></label>
+    <label class="opt"><span>Stoppschilder</span><input type="checkbox" id="oStop"></label>
+    <label class="opt"><span>Rechts vor links</span><input type="checkbox" id="oRvl"></label>
+    <label class="opt"><span>„Vorfahrt achten“-Schilder</span><input type="checkbox" id="oYield"></label>
+    <div style="padding-top:12px">
+      <div>Vorwarnung: <b id="leadVal">7</b> Sekunden vorher</div>
+      <input type="range" id="oLead" min="3" max="12" step="1" value="7">
+      <div class="hint">Bei 30 km/h sind 7 s etwa 60 m, bei 50 km/h etwa 100 m.</div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <h2>Kartendaten</h2>
+    <div class="row">
+      <button class="btn" id="btnLoadTal">Tal + Hausham neu laden</button>
+      <button class="btn" id="btnLoadHere">Um mich (±5 km)</button>
+    </div>
+    <div class="hint" style="margin-top:8px" id="ownInfo"></div>
+    <div class="row" style="margin-top:8px"><button class="btn" id="btnClearOwn">Eigene Punkte &amp; Ausblendungen löschen</button></div>
+  </div>
+
+  <div class="sec">
+    <h2>Protokoll</h2>
+    <div class="row">
+      <button class="btn" id="btnCopy">Kopieren</button>
+      <button class="btn" id="btnClearLog">Leeren</button>
+    </div>
+    <div id="log"></div>
+  </div>
+
+  <div class="sec hint">
+    <b style="color:var(--text)">Wichtig:</b> Die Punkte kommen aus OpenStreetMap. Dort sind längst nicht alle Stoppschilder eingetragen. Fehlende kannst du während der Fahrt mit „+ Stopp“ speichern.
+    „Rechts vor links“ errät die App: Kreuzungen, an denen nur Wohn- und Nebenstraßen zusammenkommen und kein Schild und keine Ampel eingetragen ist. Was der Fahrlehrer sagt, gilt.
+    Das Display muss anbleiben (Taschenmodus), sonst stoppt das GPS.
+    Karte © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap-Mitwirkende</a>, © <a href="https://carto.com/attributions">CARTO</a>.
   </div>
 </div>
 
-<div class="card">
-  <h2>Protokoll</h2>
-  <div class="row">
-    <button id="btnCopy">Protokoll kopieren</button>
-    <button id="btnClearLog">Leeren</button>
-  </div>
-  <div class="row" style="margin-top:8px">
-    <button id="btnClearOwn">Eigene Punkte &amp; Ausblendungen löschen</button>
-  </div>
-  <div id="log"></div>
-</div>
-
-<div class="card hint">
-  <b style="color:var(--text)">Wichtig:</b> Die Punkte kommen aus OpenStreetMap. Stoppschilder sind dort meist gut eingetragen.
-  „Rechts vor links“ steht nicht direkt in der Karte. Die App rät es: Kreuzungen, an denen nur Wohn- und Nebenstraßen zusammenkommen
-  und kein Schild und keine Ampel eingetragen ist. Es kann also Fehlalarme und verpasste Stellen geben. Was der Fahrlehrer sagt, gilt.
-  Das Display muss anbleiben (Taschenmodus), sonst stoppt das GPS im Browser.
-  Kartendaten © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap-Mitwirkende</a>.
-</div>
-
-<div id="flash"><div id="flashText"></div><small id="flashSub"></small></div>
+<div id="flash"><div class="fi" id="flashIcon"></div><b id="flashText"></b><small id="flashSub"></small></div>
 <div id="pocket">
   <div class="pnext" id="pocketNext"></div>
   <div>Taschenmodus aktiv<br>Zum Beenden 2 Sekunden gedrückt halten</div>
   <div id="pocketRing"></div>
 </div>
+<div id="toast" class="glass"></div>
 
 <script src="core.js"></script>
-
 <script>
 /* ===================== APP ===================== */
 (() => {
 const $ = id => document.getElementById(id);
-// Kreuth/Glashütte (Süd) bis Moosrain (Nord), Bad Wiessee (West) bis Hausham (Ost)
 const TALBOX = [47.580, 11.650, 47.800, 11.890];
 const ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter'
 ];
-const TYPES = {
-  stop:  { name: 'STOPP', sub: 'Stoppschild', color: '#e5484d', say: 'Stoppschild', hap: [0, 110, 220, 650, 760, 870, 1300, 1410, 1520], vib: [700, 150, 700, 150, 700], tones: [[440, .35], [0, .1], [440, .35], [0, .1], [440, .35]] },
-  rvl:   { name: 'RECHTS VOR LINKS', sub: 'Kreuzung ohne Schild', color: '#f5a524', say: 'Rechts vor links', hap: [0, 140, 600, 740, 1200, 1340], vib: [180, 90, 180, 90, 180, 90, 180], tones: [[880, .12], [0, .07], [880, .12], [0, .07], [880, .12], [0, .07], [880, .12]] },
-  yield: { name: 'VORFAHRT ACHTEN', sub: 'Schild', color: '#ffd60a', say: 'Vorfahrt achten', hap: [0, 500, 1000], vib: [900], tones: [[660, .6]] }
+
+/* ---------- Grafiken ---------- */
+const SVG = {
+  stop: s => `<svg width="${s}" height="${s}" viewBox="0 0 100 100"><polygon points="30,3 70,3 97,30 97,70 70,97 30,97 3,70 3,30" fill="#fff"/><polygon points="32,9 68,9 91,32 91,68 68,91 32,91 9,68 9,32" fill="#e3121b"/><polygon points="34,14 66,14 86,34 86,66 66,86 34,86 14,66 14,34" fill="none" stroke="#fff" stroke-width="3"/><text x="50" y="59.5" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-weight="800" font-size="25" textLength="60" lengthAdjust="spacingAndGlyphs" fill="#fff">STOP</text></svg>`,
+  rvl: s => `<svg width="${s}" height="${s * .9}" viewBox="0 0 100 90"><path d="M50 4 96 84a3 3 0 0 1-2.6 4.5H6.6A3 3 0 0 1 4 84z" fill="#fff" stroke="#e3121b" stroke-width="9" stroke-linejoin="round"/><rect x="45" y="30" width="10" height="46" fill="#111"/><rect x="29" y="49" width="42" height="8" fill="#111"/></svg>`,
+  yield: s => `<svg width="${s}" height="${s * .9}" viewBox="0 0 100 90"><path d="M50 86 96 6a3 3 0 0 0-2.6-4.5H6.6A3 3 0 0 0 4 6z" fill="#fff" stroke="#e3121b" stroke-width="9" stroke-linejoin="round"/></svg>`,
+  car: `<svg viewBox="0 0 64 64">
+    <defs><linearGradient id="cb" x1="0" x2="1"><stop offset="0" stop-color="#2f6bff"/><stop offset=".5" stop-color="#7fb0ff"/><stop offset="1" stop-color="#2f6bff"/></linearGradient></defs>
+    <path d="M32 3c7 0 12 4 13 10l2 12c1 5 1 10 0 15l-1 13c-1 5-6 8-14 8s-13-3-14-8l-1-13c-1-5-1-10 0-15l2-12C20 7 25 3 32 3z" fill="url(#cb)" stroke="#0d1b3d" stroke-width="1.5"/>
+    <path d="M22 21c3-2 17-2 20 0l-2 9c-4-1-12-1-16 0z" fill="#0d1b3d" opacity=".9"/>
+    <path d="M23 44c3 1 15 1 18 0l1 6c-4 2-16 2-20 0z" fill="#0d1b3d" opacity=".85"/>
+    <rect x="19" y="5.5" width="6" height="3" rx="1.5" fill="#eaf6ff"/><rect x="39" y="5.5" width="6" height="3" rx="1.5" fill="#eaf6ff"/>
+    <rect x="18" y="56" width="9" height="2.6" rx="1.3" fill="#ff3b3b"/><rect x="37" y="56" width="9" height="2.6" rx="1.3" fill="#ff3b3b"/>
+    <path d="M32 9v9" stroke="#cfe2ff" stroke-width="1.2" opacity=".7"/>
+  </svg>`
 };
 
-let map = null, markerLayer = null, meMarker = null, simLine = null, simPts = [], simPicking = false, simTimer = null;
+const TYPES = {
+  stop:  { name: 'STOPP', title: 'Stoppschild', color: '#ff3b3b', say: 'Stoppschild', n: 3, hap: [0, 110, 220, 650, 760, 870, 1300, 1410, 1520], vib: [700, 150, 700, 150, 700], tones: [[440, .35], [0, .1], [440, .35], [0, .1], [440, .35]] },
+  rvl:   { name: 'RECHTS VOR LINKS', title: 'Rechts vor links', color: '#ff9f1a', say: 'Rechts vor links', n: 1, hap: [0, 140, 600, 740, 1200, 1340], vib: [180, 90, 180, 90, 180, 90, 180], tones: [[880, .12], [0, .07], [880, .12], [0, .07], [880, .12], [0, .07], [880, .12]] },
+  yield: { name: 'VORFAHRT ACHTEN', title: 'Vorfahrt achten', color: '#ffd60a', say: 'Vorfahrt achten', n: 2, hap: [0, 500, 1000], vib: [900], tones: [[660, .6]] }
+};
+
+let map = null, signLayer = null, carMarker = null, accCircle = null, simLine = null, simPts = [], simPicking = false, simTimer = null;
 let pois = [], basePois = [], baseMeta = null, lastAlertPoi = null, grid = new Map(), running = false, watchId = null, wakeLock = null, audioCtx = null;
-let last = null, anchor = null, alerted = new Map(), recent = [], logEntries = [];
+let last = null, anchor = null, alerted = new Map(), recent = [], logEntries = [], following = true, hotId = null, markerById = new Map();
 let settings = { vib: true, hap: true, ntf: true, snd: false, voc: false, stop: true, rvl: true, yield: false, lead: 7 };
-let lastFix = null;
+let lastFix = null, carHeading = 0;
 
 const store = {
   get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
 };
+function toast(msg, ms) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('show');
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('show'), ms || 2200);
+}
 
 /* ---------- Einstellungen ---------- */
 const optMap = { oVib: 'vib', oHap: 'hap', oNtf: 'ntf', oSnd: 'snd', oVoc: 'voc', oStop: 'stop', oRvl: 'rvl', oYield: 'yield' };
 Object.assign(settings, store.get('fh_settings') || {});
 for (const [el, k] of Object.entries(optMap)) {
   $(el).checked = !!settings[k];
-  $(el).addEventListener('change', () => { settings[k] = $(el).checked; store.set('fh_settings', settings); renderMarkers(); });
+  $(el).addEventListener('change', () => { settings[k] = $(el).checked; store.set('fh_settings', settings); renderSigns(); });
 }
 $('oLead').value = settings.lead; $('leadVal').textContent = settings.lead;
 $('oLead').addEventListener('input', () => { settings.lead = +$('oLead').value; $('leadVal').textContent = settings.lead; store.set('fh_settings', settings); });
+
+/* ---------- Menü ---------- */
+function openSheet() { $('sheet').classList.add('open'); $('backdrop').classList.add('open'); }
+function closeSheet() { $('sheet').classList.remove('open'); $('backdrop').classList.remove('open'); }
+$('btnMenu').onclick = openSheet; $('btnClose').onclick = closeSheet; $('backdrop').onclick = closeSheet;
+$('chipData').onclick = openSheet; $('chipSetup').onclick = openSheet;
 
 /* ---------- Daten ---------- */
 function buildGrid() {
@@ -260,17 +373,18 @@ function applyPersonal() {
   const hidden = p => personal.hide.some(h => h.t === p.t && Math.abs(h.lat - p.lat) < 3e-5 && Math.abs(h.lon - p.lon) < 4e-5);
   pois = basePois.filter(p => !hidden(p)).map(p => ({ t: p.t, lat: p.lat, lon: p.lon, a: p.a }))
     .concat(personal.add.map(p => ({ t: p.t, lat: p.lat, lon: p.lon, a: p.a, own: true })));
-  buildGrid(); alerted.clear(); showDataStatus(baseMeta); renderMarkers();
+  buildGrid(); alerted.clear(); hotId = null; showDataStatus(baseMeta); renderSigns();
   $('ownInfo').textContent = (personal.add.length || personal.hide.length)
-    ? `Gespeichert: ${personal.add.length} eigene Punkte, ${personal.hide.length} ausgeblendet.` : '';
+    ? `Gespeichert: ${personal.add.length} eigene Punkte, ${personal.hide.length} ausgeblendet.` : 'Noch keine eigenen Punkte.';
 }
 function showDataStatus(meta) {
   const c = { stop: 0, rvl: 0, yield: 0 };
   pois.forEach(p => c[p.t]++);
   const when = meta && meta.time ? new Date(meta.time).toLocaleDateString('de-DE') : '';
   $('dataStatus').textContent = pois.length
-    ? `${c.stop} Stoppschilder · ${c.rvl} Rechts-vor-links-Kreuzungen · ${c.yield} Vorfahrt-achten · ${meta && meta.area || ''} ${when}`
+    ? `${c.stop} Stoppschilder · ${c.rvl} Rechts-vor-links · ${c.yield} Vorfahrt achten · ${meta && meta.area || ''} ${when}`
     : 'Noch keine Kartendaten geladen.';
+  $('chipData').textContent = pois.length ? `🛑 ${c.stop}  ·  ⚠️ ${c.rvl}` : 'Keine Kartendaten';
 }
 async function loadArea(box, areaName) {
   const q = Core.query(...box);
@@ -289,7 +403,7 @@ async function loadArea(box, areaName) {
       const data = await res.json();
       await new Promise(r => setTimeout(r, 30));
       setBase(Core.process(data), { time: Date.now(), area: areaName });
-      setLoadButtons(false);
+      setLoadButtons(false); toast('Kartendaten geladen ✓');
       return;
     } catch (e) { lastErr = e; }
   }
@@ -297,7 +411,6 @@ async function loadArea(box, areaName) {
   $('dataStatus').textContent = 'Laden fehlgeschlagen (' + (lastErr && lastErr.message || 'Fehler') + '). Internet prüfen und nochmal versuchen.';
 }
 function setLoadButtons(dis) { $('btnLoadTal').disabled = dis; $('btnLoadHere').disabled = dis; }
-// Fertig ausgewertete Daten fürs Tal liegen als data.json neben der App (werden auf GitHub erzeugt)
 async function loadBundled(userTriggered) {
   try {
     if (userTriggered) $('dataStatus').textContent = 'Lade Kartendaten …';
@@ -308,6 +421,7 @@ async function loadBundled(userTriggered) {
     const have = store.get('fh_pois');
     if (userTriggered || !basePois.length || !have || !have.meta || have.meta.area !== d.area || (have.meta.time || 0) < d.time) {
       setBase(d.pois, { time: d.time, area: d.area });
+      if (userTriggered) toast('Kartendaten geladen ✓');
     }
     return true;
   } catch (e) {
@@ -328,21 +442,117 @@ $('btnLoadHere').onclick = () => {
     loadArea([la - dLa, lo - dLo, la + dLa, lo + dLo], 'Umkreis Standort');
   }, err => { $('dataStatus').textContent = 'Kein Standort: ' + err.message; }, { enableHighAccuracy: true, timeout: 20000 });
 };
-const cached = store.get('fh_pois');
-loadPersonal();
-if (cached && cached.pois) { basePois = cached.pois; baseMeta = cached.meta; }
-applyPersonal();
-loadBundled(false);
+
+/* ---------- Karte ---------- */
+function initMap() {
+  if (typeof L === 'undefined') {
+    $('map').innerHTML = '<div class="no-map">Karte konnte nicht geladen werden (kein Internet?).<br>Die Warnungen funktionieren trotzdem.</div>';
+    return;
+  }
+  const lp = store.get('fh_lastpos');
+  map = L.map('map', { zoomControl: false, attributionControl: true, preferCanvas: false, zoomSnap: 0.25 })
+    .setView(lp ? [lp.lat, lp.lon] : [47.712, 11.757], lp ? 16 : 13);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 20, subdomains: 'abcd', attribution: '© OpenStreetMap © CARTO'
+  }).addTo(map);
+  map.attributionControl.setPrefix(false);
+  signLayer = L.layerGroup().addTo(map);
+  accCircle = L.circle([0, 0], { radius: 1, color: '#4f8cff', weight: 1, opacity: .5, fillColor: '#4f8cff', fillOpacity: .1, interactive: false });
+  simLine = L.polyline([], { color: '#4f8cff', weight: 5, opacity: .9, dashArray: '2 10', lineCap: 'round' }).addTo(map);
+  map.on('dragstart', () => { if (lastFix) setFollow(false); });
+  map.on('moveend zoomend', () => {
+    // nur neu zeichnen, wenn sich der Ausschnitt deutlich verändert hat (sonst ruckelt es beim Mitfahren)
+    const c = map.getCenter(), z = map.getZoom(), lr = renderSigns._last;
+    if (lr && lr.z === z && map.distance(c, lr.c) < lr.span * 0.12) return;
+    renderSigns();
+  });
+  map.on('click', e => {
+    if (!simPicking) return;
+    simPts.push([e.latlng.lat, e.latlng.lng]); simLine.setLatLngs(simPts);
+    $('simText').textContent = simPts.length < 2 ? 'Weiter tippen …' : `${simPts.length} Punkte · bereit`;
+  });
+  renderSigns();
+}
+function setFollow(on) {
+  following = on;
+  $('btnFollow').classList.toggle('active', on);
+  if (on && lastFix && map) centerOnCar(true);
+}
+$('btnFollow').onclick = () => setFollow(true);
+
+function signIcon(p, hot) {
+  const s = p.t === 'stop' ? 30 : 28;
+  return L.divIcon({
+    className: '', iconSize: [0, 0],
+    html: `<div class="sign${hot ? ' hot' : ''}${p.own ? ' own' : ''}" style="--c:${TYPES[p.t].color}">${SVG[p.t](s)}</div>`
+  });
+}
+function renderSigns() {
+  if (!map || !signLayer) return;
+  signLayer.clearLayers(); markerById = new Map();
+  const z = map.getZoom();
+  const b = map.getBounds().pad(0.3);
+  renderSigns._last = { c: map.getCenter(), z, span: map.distance(map.getBounds().getNorthWest(), map.getBounds().getSouthEast()) };
+  const vis = [];
+  for (const p of pois) {
+    if (!settings[p.t]) continue;
+    if (!b.contains([p.lat, p.lon])) continue;
+    if (z < 14.5 && p.t === 'rvl' && !p.own) continue; // weit rausgezoomt nur Schilder
+    vis.push(p);
+  }
+  vis.sort((a, b2) => (a.t === 'stop' ? 0 : 1) - (b2.t === 'stop' ? 0 : 1));
+  for (const p of vis.slice(0, 450)) {
+    const m = L.marker([p.lat, p.lon], { icon: signIcon(p, p.id === hotId), interactive: true, keyboard: false, zIndexOffset: p.t === 'stop' ? 500 : 0 })
+      .bindPopup(`<b>${TYPES[p.t].title}</b>${p.t === 'rvl' ? '<br><small>vermutet</small>' : ''}${p.own ? '<br><small>selbst gespeichert</small>' : ''}`);
+    m.addTo(signLayer); markerById.set(p.id, m);
+  }
+}
+function setHot(id) {
+  if (id === hotId) return;
+  const old = hotId; hotId = id;
+  for (const k of [old, id]) {
+    if (k == null) continue;
+    const m = markerById.get(k), p = pois[k];
+    if (m && p) m.setIcon(signIcon(p, k === hotId));
+  }
+}
+function centerOnCar(animate) {
+  if (!map || !lastFix) return;
+  const cur = L.latLng(lastFix.lat, lastFix.lon);
+  // Auto etwas unterhalb der Mitte, damit man mehr von dem sieht, was vorne kommt
+  const h = (lastFix.heading != null ? lastFix.heading : carHeading) * Math.PI / 180;
+  const z = Math.max(map.getZoom(), 15.5);
+  const px = map.project(cur, z);
+  const ahead = map.getSize().y * 0.18;
+  const c = map.unproject(px.add([Math.sin(h) * ahead, -Math.cos(h) * ahead]), z);
+  map.setView(c, z, { animate: !!animate, duration: 0.6, easeLinearity: 0.5 });
+}
+function updateCar(cur, heading, acc) {
+  if (!map) return;
+  if (heading != null) {
+    // kürzester Drehweg, damit der Pfeil nicht einmal rundherum dreht
+    let d = ((heading - carHeading) % 360 + 540) % 360 - 180;
+    carHeading += d;
+  }
+  if (!carMarker) {
+    carMarker = L.marker(cur, { interactive: false, keyboard: false, zIndexOffset: 2000,
+      icon: L.divIcon({ className: '', iconSize: [0, 0], html: `<div class="car" id="car"><div class="rot" id="carRot">${SVG.car}</div></div>` }) }).addTo(map);
+    accCircle.addTo(map);
+  } else carMarker.setLatLng(cur);
+  const rot = document.getElementById('carRot'), car = document.getElementById('car');
+  if (rot) rot.style.transform = `rotate(${carHeading}deg)`;
+  if (car) car.classList.toggle('idle', heading == null);
+  accCircle.setLatLng(cur); accCircle.setRadius(Math.min(acc || 5, 80));
+  if (following) centerOnCar(true);
+}
 
 /* ---------- Ausgabe: Vibration / Haptik / Ton / Sprache ---------- */
 function unlockOutputs() {
+  if (!settings.snd && !settings.voc) return;
   try {
     if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     if (audioCtx.state === 'suspended') audioCtx.resume();
-    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-    g.gain.value = 0.0001; o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + 0.05);
   } catch (e) {}
-  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {}
   try { if ('speechSynthesis' in window) { const u = new SpeechSynthesisUtterance(' '); u.volume = 0; speechSynthesis.speak(u); } } catch (e) {}
 }
 function beep(tones) {
@@ -365,28 +575,21 @@ function say(text) {
   try {
     if (!('speechSynthesis' in window)) return;
     speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text); u.lang = 'de-DE'; u.rate = 1.05; u.volume = 1;
+    const u = new SpeechSynthesisUtterance(text); u.lang = 'de-DE'; u.rate = 1.05;
     speechSynthesis.speak(u);
   } catch (e) {}
 }
 function hapticTick() {
-  // iOS 18+: Antippen eines (unsichtbaren) Schalters löst ein leichtes Haptik-Tippen aus
   try {
     const label = document.createElement('label');
-    label.setAttribute('aria-hidden', 'true');
-    label.style.display = 'none';
+    label.setAttribute('aria-hidden', 'true'); label.style.display = 'none';
     const input = document.createElement('input');
-    input.type = 'checkbox';
-    input.setAttribute('switch', '');
-    label.appendChild(input);
-    document.head.appendChild(label);
-    label.click();
-    document.head.removeChild(label);
+    input.type = 'checkbox'; input.setAttribute('switch', '');
+    label.appendChild(input); document.head.appendChild(label); label.click(); document.head.removeChild(label);
   } catch (e) {}
 }
-function haptic(times) {
-  for (const t of times) { if (t === 0) hapticTick(); else setTimeout(hapticTick, t); }
-}
+function haptic(times) { for (const t of times) { if (t === 0) hapticTick(); else setTimeout(hapticTick, t); } }
+
 /* ---------- Mitteilungen: auf dem iPhone der einzige Weg zu vibrieren ---------- */
 const IS_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
 const STANDALONE = window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
@@ -397,43 +600,47 @@ if ('serviceWorker' in navigator) {
 function ntfPermission() { return ('Notification' in window) ? Notification.permission : 'unsupported'; }
 function updateSetup() {
   const perm = ntfPermission();
-  let html;
+  let html, needs = false;
+  $('btnNtf').style.display = 'none';
   if (IS_IOS && !STANDALONE) {
-    html = '1. Unten in Safari auf <b>Teilen</b> (Quadrat mit Pfeil) tippen<br>2. <b>„Zum Home-Bildschirm“</b> wählen<br>3. Die App über das neue <b>Fahrhilfe-Icon</b> öffnen und hier „Mitteilungen erlauben“ tippen.<br>Nur so darf die App dein iPhone vibrieren lassen.';
-    $('btnNtf').style.display = 'none';
+    html = '1. Unten in Safari auf <b>Teilen</b> (Quadrat mit Pfeil) tippen<br>2. <b>„Zum Home-Bildschirm“</b> wählen<br>3. Die App über das neue <b>STOP-Icon</b> öffnen und hier „Mitteilungen erlauben“ tippen.';
+    needs = true;
   } else if (perm === 'granted') {
-    html = '✅ Mitteilungen sind erlaubt. Stell das iPhone auf <b>lautlos</b> (Schalter/Aktionstaste an der Seite), dann gibt es keinen Ton, nur Vibration. Drück einen Test-Knopf: Stoppschild = 3×, Rechts vor links = 1×.';
-    $('btnNtf').style.display = 'none';
+    html = '✅ Mitteilungen sind erlaubt. Stell das iPhone auf <b>lautlos</b>, dann gibt es keinen Ton, nur Vibration.';
   } else if (perm === 'denied') {
-    html = '❌ Mitteilungen sind blockiert. Einstellungen → Mitteilungen → Fahrhilfe → Mitteilungen erlauben.';
-    $('btnNtf').style.display = 'none';
+    html = '❌ Mitteilungen sind blockiert. Einstellungen → Mitteilungen → Fahrhilfe → Mitteilungen erlauben.'; needs = true;
   } else if (perm === 'unsupported') {
-    html = 'Dieser Browser kann keine Mitteilungen.' + (IS_IOS ? ' App bitte über das Home-Bildschirm-Icon öffnen.' : '');
-    $('btnNtf').style.display = 'none';
+    html = 'Dieser Browser kann keine Mitteilungen.'; needs = IS_IOS;
   } else {
     html = 'Fast fertig: Tippe auf „Mitteilungen erlauben“ und bestätige mit <b>Erlauben</b>.';
-    $('btnNtf').style.display = '';
+    $('btnNtf').style.display = ''; needs = true;
   }
   $('setupText').innerHTML = html;
-  if (!IS_IOS && navigator.vibrate) $('setupCard').style.display = 'none';
+  const relevant = IS_IOS || !navigator.vibrate;
+  $('setupCard').classList.toggle('hidden', !relevant);
+  $('chipSetup').classList.toggle('hidden', !(relevant && needs));
 }
-$('btnNtf').onclick = async () => {
-  try { await Notification.requestPermission(); } catch (e) {}
-  updateSetup();
+$('btnNtf').onclick = async () => { try { await Notification.requestPermission(); } catch (e) {} updateSetup(); };
+$('btnNtfLater').onclick = async () => {
+  if (ntfPermission() !== 'granted') { toast('Mitteilungen sind noch nicht erlaubt'); addLog('⚠️ Mitteilungen nicht erlaubt (' + ntfPermission() + ')'); return; }
+  try {
+    const r = swReg || await navigator.serviceWorker.ready;
+    (r.active || navigator.serviceWorker.controller).postMessage({ type: 'notify', title: '🛑 Test-Mitteilung', delay: 5000 });
+    addLog('⏱️ Test-Mitteilung kommt in 5 s'); toast('Jetzt iPhone sperren!', 4000);
+  } catch (e) { addLog('⚠️ Test fehlgeschlagen: ' + e.message); }
 };
-// Unterscheidung über die Anzahl: Stopp = 3× vibrieren, Rechts vor links = 1×, Vorfahrt achten = 2×
+// Unterscheidung über die Anzahl: Stopp = 3×, Rechts vor links = 1×, Vorfahrt achten = 2×
 function notifyVibrate(T) {
   if (!settings.ntf || ntfPermission() !== 'granted') return;
-  const title = T.name === 'RECHTS VOR LINKS' ? '⚠️ Rechts vor links' : T.name === 'STOPP' ? '🛑 Stoppschild' : '⚠️ Vorfahrt achten';
-  const n = T.name === 'STOPP' ? 3 : T.name === 'RECHTS VOR LINKS' ? 1 : 2;
+  const title = T.name === 'STOPP' ? '🛑 Stoppschild' : '⚠️ ' + T.title;
   const one = k => {
-    try {
-      if (navigator.serviceWorker && navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage({ type: 'notify', title });
-      else if (swReg) swReg.showNotification(title, { tag: 'fahrhilfe-' + Date.now() + '-' + k, silent: false });
-      else new Notification(title);
-    } catch (e) {}
+    const opts = { body: 'Fahrhilfe', tag: 'fahrhilfe-' + Date.now() + '-' + k, silent: false, icon: 'icon-192.png' };
+    (swReg ? Promise.resolve(swReg) : navigator.serviceWorker.ready)
+      .then(r => r.showNotification(title, opts))
+      .then(() => { if (k === 0) addLog('📨 Mitteilung gesendet'); })
+      .catch(e => addLog('⚠️ Mitteilung fehlgeschlagen: ' + (e && e.message || e)));
   };
-  for (let k = 0; k < n; k++) setTimeout(() => one(k), k * 1400);
+  for (let k = 0; k < T.n; k++) setTimeout(() => one(k), k * 1400);
 }
 updateSetup();
 
@@ -445,20 +652,22 @@ function signal(type) {
   if (settings.snd) beep(T.tones);
   if (settings.voc) setTimeout(() => say(T.say), settings.snd ? 900 : 0);
   const f = $('flash');
-  $('flashText').textContent = T.name; $('flashSub').textContent = T.sub;
-  f.style.background = T.color; f.style.display = 'flex';
-  clearTimeout(signal._t); signal._t = setTimeout(() => f.style.display = 'none', 2500);
+  f.style.setProperty('--c', T.color);
+  $('flashIcon').innerHTML = SVG[type](150);
+  $('flashText').textContent = T.name; $('flashSub').textContent = type === 'rvl' ? 'Kreuzung ohne Schild' : 'Gleich kommt ein Schild';
+  f.style.display = 'flex';
+  clearTimeout(signal._t); signal._t = setTimeout(() => f.style.display = 'none', 2300);
 }
 $('flash').onclick = () => $('flash').style.display = 'none';
 (() => {
   const ua = navigator.userAgent, m = ua.match(/OS (\d+)[_.](\d+)/);
-  const ios = /iPhone|iPad|iPod/.test(ua) ? (m ? m[1] + '.' + m[2] : '?') : null;
+  const ios = IS_IOS ? (m ? m[1] + '.' + m[2] : '?') : null;
   let txt = ios ? 'iOS ' + ios + ' · ' : '';
   txt += navigator.vibrate ? 'Vibration: verfügbar' : 'Vibration über Browser: nein';
   if (ios) txt += ' · Home-Bildschirm-App: ' + (STANDALONE ? 'ja' : 'nein') + ' · Mitteilungen: ' + ({ granted: 'erlaubt', denied: 'blockiert', default: 'noch nicht gefragt', unsupported: 'nicht verfügbar' })[ntfPermission()];
   $('diag').textContent = txt;
 })();
-['Stop', 'Rvl', 'Yield'].forEach(n => $('t' + n).onclick = () => { unlockOutputs(); signal(n.toLowerCase()); });
+['Stop', 'Rvl', 'Yield'].forEach(n => $('t' + n).onclick = () => { unlockOutputs(); closeSheet(); signal(n.toLowerCase()); });
 
 /* ---------- Positionsverarbeitung ---------- */
 function handleFix(lat, lon, acc, gpsSpeed, gpsHead, ts) {
@@ -469,21 +678,21 @@ function handleFix(lat, lon, acc, gpsSpeed, gpsHead, ts) {
   const moved = Core.dist(anchor.p, cur);
   if (moved >= 6) {
     const dt = (ts - anchor.ts) / 1000;
-    const calcHead = Core.bearing(anchor.p, cur);
     if (speed == null && dt > 0) speed = moved / dt;
-    last = { head: calcHead, ts };
+    last = { head: Core.bearing(anchor.p, cur), ts };
     anchor = { p: cur, ts };
   }
   if (gpsHead != null && !isNaN(gpsHead) && (speed || 0) > 2) heading = gpsHead;
   else if (last && ts - last.ts < 8000) heading = last.head;
   if (speed == null) speed = 0;
   lastFix = { lat, lon, acc, speed, heading, ts };
+  if (!handleFix._saved || ts - handleFix._saved > 15000) { store.set('fh_lastpos', { lat, lon }); handleFix._saved = ts; }
 
   $('sSpeed').textContent = Math.round(speed * 3.6);
-  $('sAcc').textContent = acc != null ? Math.round(acc) : '–';
-  $('sHead').textContent = heading != null ? compass(heading) : '–';
-  $('gpsWarn').textContent = acc > 35 ? 'GPS ungenau – Warnungen können zu früh/spät kommen.' : '';
-  updateMe(cur);
+  const gc = acc == null ? 'var(--muted)' : acc <= 15 ? 'var(--ok)' : acc <= 35 ? 'var(--yield)' : 'var(--stop)';
+  $('chipGps').querySelector('i').style.background = gc;
+  $('chipGps').querySelector('span').textContent = acc != null ? `GPS ±${Math.round(acc)} m` : 'GPS';
+  updateCar(cur, heading, acc);
 
   if (!pois.length || heading == null || speed < 1.5) { setNext(null); return; }
   let best = null;
@@ -496,53 +705,70 @@ function handleFix(lat, lon, acc, gpsSpeed, gpsHead, ts) {
     const prev = alerted.get(p.id);
     if (prev && ts - prev < 120000) continue;
     alerted.set(p.id, ts);
-    // gleiche Art kurz zuvor ganz in der Nähe gemeldet (z. B. Doppelknoten) -> nicht nochmal
     recent = recent.filter(x => ts - x.ts < 10000);
     if (recent.some(x => x.t === p.t && Core.dist([x.lat, x.lon], [p.lat, p.lon]) < 45)) continue;
     recent.push({ t: p.t, lat: p.lat, lon: p.lon, ts });
     signal(p.t);
     lastAlertPoi = { p, ts };
-    addLog(TYPES[p.t].sub + ' in ' + Math.round(r.d) + ' m', p.lat, p.lon, Math.round(speed * 3.6) + ' km/h');
+    addLog(TYPES[p.t].title + ' in ' + Math.round(r.d) + ' m', p.lat, p.lon, Math.round(speed * 3.6) + ' km/h');
   }
   setNext(best);
 }
 function setNext(best) {
-  const txt = best && best.d < 400 ? `${TYPES[best.p.t].sub === 'Kreuzung ohne Schild' ? 'Rechts vor links' : TYPES[best.p.t].sub} in ${Math.round(best.d / 10) * 10} m` : (running ? 'Nichts in Fahrtrichtung' : '–');
-  $('nextPoi').textContent = txt;
-  $('nextPoi').style.color = best && best.d < 400 ? TYPES[best.p.t].color : '';
-  $('pocketNext').textContent = best && best.d < 400 ? txt : '';
+  const card = $('nextCard');
+  if (best && best.d < 400) {
+    const T = TYPES[best.p.t];
+    card.classList.add('on'); card.style.setProperty('--c', T.color);
+    $('nextIcon').innerHTML = SVG[best.p.t](34);
+    $('nextTitle').textContent = T.title;
+    $('nextDist').textContent = best.p.t === 'rvl' ? 'Kreuzung ohne Schild' : best.p.own ? 'selbst gespeichert' : 'voraus';
+    const d = Math.round(best.d / 10) * 10;
+    $('nextBig').innerHTML = `${d}<small>m</small>`;
+    $('nextBar').style.width = Math.max(0, Math.min(100, 100 - best.d / 4)) + '%';
+    $('pocketNext').textContent = `${T.title} · ${d} m`;
+    setHot(best.p.id);
+  } else {
+    card.classList.remove('on');
+    $('nextIcon').innerHTML = '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+    $('nextTitle').textContent = 'Freie Fahrt';
+    $('nextDist').textContent = running || simTimer ? 'Nichts in Fahrtrichtung' : 'Drück Start, wenn\'s losgeht';
+    $('nextBig').innerHTML = ''; $('nextBar').style.width = '0';
+    $('pocketNext').textContent = '';
+    setHot(null);
+  }
 }
-function compass(h) { return ['N', 'NO', 'O', 'SO', 'S', 'SW', 'W', 'NW'][Math.round(h / 45) % 8] + ' ' + Math.round(h) + '°'; }
 
 /* ---------- Start/Stopp ---------- */
-async function requestWake() {
-  try { if ('wakeLock' in navigator) { wakeLock = await navigator.wakeLock.request('screen'); } } catch (e) {}
+async function requestWake() { try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {} }
+document.addEventListener('visibilitychange', () => { if ((running || simTimer) && document.visibilityState === 'visible') requestWake(); });
+function setRunningUI(on) {
+  $('btnStart').textContent = on ? 'Stopp' : 'Start';
+  $('btnStart').classList.toggle('halt', on);
+  $('quick').classList.toggle('hidden', !on && !simTimer);
 }
-document.addEventListener('visibilitychange', () => { if (running && document.visibilityState === 'visible') requestWake(); });
 async function start() {
-  if (!navigator.geolocation) { $('runState').textContent = 'Dieses Gerät/Browser bietet kein GPS an.'; return; }
-  if (!pois.length) { $('runState').textContent = 'Lade Kartendaten …'; await loadBundled(true); }
-  if (!pois.length) { $('runState').textContent = 'Keine Kartendaten – bitte Internet prüfen und oben „laden“ tippen.'; return; }
+  if (!navigator.geolocation) { toast('Kein GPS in diesem Browser'); return; }
+  if (!pois.length) { toast('Lade Kartendaten …'); await loadBundled(true); }
+  if (!pois.length) { toast('Keine Kartendaten – Internet prüfen', 3500); return; }
   unlockOutputs(); stopSim();
   running = true; anchor = null; last = null; alerted.clear();
-  $('btnStart').textContent = 'Stopp'; $('btnStart').className = 'big halt';
-  $('runState').textContent = 'Läuft – warte auf GPS …';
-  requestWake();
+  setRunningUI(true); setFollow(true); requestWake();
+  $('chipGps').querySelector('span').textContent = 'Suche GPS …';
   watchId = navigator.geolocation.watchPosition(pos => {
-    $('runState').textContent = 'Läuft';
     const c = pos.coords;
     handleFix(c.latitude, c.longitude, c.accuracy, c.speed, c.heading, pos.timestamp || Date.now());
   }, err => {
-    $('runState').textContent = err.code === 1 ? 'Standortzugriff verweigert – in den Einstellungen erlauben.' : 'GPS-Fehler: ' + err.message;
-  }, { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 });
-  addLog('Start');
+    if (err.code === 1) toast('Standort verweigert – Einstellungen → Datenschutz → Ortungsdienste → Safari/Fahrhilfe', 5000);
+    else if (err.code === 2) toast('Kein GPS-Empfang', 2500);
+  }, { enableHighAccuracy: true, maximumAge: 0 });
+  setNext(null); addLog('Start');
 }
 function stop() {
   running = false;
   if (watchId != null) navigator.geolocation.clearWatch(watchId); watchId = null;
   try { wakeLock && wakeLock.release(); } catch (e) {} wakeLock = null;
-  $('btnStart').textContent = 'Start'; $('btnStart').className = 'big go';
-  $('runState').textContent = 'Gestoppt'; setNext(null);
+  setRunningUI(false); setNext(null);
+  $('chipGps').querySelector('span').textContent = 'GPS aus'; $('chipGps').querySelector('i').style.background = '';
   addLog('Stopp');
 }
 $('btnStart').onclick = () => running ? stop() : start();
@@ -551,13 +777,13 @@ $('btnStart').onclick = () => running ? stop() : start();
 $('btnPocket').onclick = () => { if (!running) start(); $('pocket').style.display = 'flex'; requestWake(); };
 (() => {
   const p = $('pocket'); let timer = null;
-  const down = e => { e.preventDefault(); $('pocketRing').style.borderColor = '#3e7bfa'; timer = setTimeout(() => { p.style.display = 'none'; $('pocketRing').style.borderColor = '#222'; }, 2000); };
-  const up = e => { e.preventDefault(); clearTimeout(timer); $('pocketRing').style.borderColor = '#222'; };
+  const down = e => { e.preventDefault(); $('pocketRing').style.borderColor = '#4f8cff'; timer = setTimeout(() => { p.style.display = 'none'; $('pocketRing').style.borderColor = '#1d1d1d'; }, 2000); };
+  const up = e => { e.preventDefault(); clearTimeout(timer); $('pocketRing').style.borderColor = '#1d1d1d'; };
   p.addEventListener('touchstart', down, { passive: false }); p.addEventListener('touchend', up); p.addEventListener('touchcancel', up);
   p.addEventListener('mousedown', down); p.addEventListener('mouseup', up);
 })();
 
-/* ---------- Protokoll ---------- */
+/* ---------- Protokoll & eigene Punkte ---------- */
 function addLog(msg, lat, lon, extra) {
   const t = new Date().toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   logEntries.unshift({ t, msg, lat, lon, extra });
@@ -573,90 +799,67 @@ function renderLog() {
     $('log').appendChild(d);
   }
 }
-logEntries = store.get('fh_log') || []; renderLog();
-function flashBtn(id, txt) { const b = $(id), o = b.innerHTML; b.textContent = txt; setTimeout(() => b.innerHTML = o, 1800); }
-function addOwn(t, id) {
-  if (!lastFix) { flashBtn(id, 'Kein GPS – erst Start drücken'); return; }
+function addOwn(t) {
+  if (!lastFix) { toast('Kein GPS – erst Start drücken'); return; }
   const h = (last && last.head != null) ? last.head : lastFix.heading;
   personal.add.push({ t, lat: +lastFix.lat.toFixed(6), lon: +lastFix.lon.toFixed(6), a: h != null ? [Math.round(h)] : [] });
   savePersonal(); applyPersonal();
-  addLog('➕ ' + (t === 'stop' ? 'Stoppschild' : 'Rechts vor links') + ' gespeichert', lastFix.lat, lastFix.lon);
-  flashBtn(id, 'Gespeichert ✓');
+  addLog('➕ ' + TYPES[t].title + ' gespeichert', lastFix.lat, lastFix.lon);
+  toast(TYPES[t].title + ' gespeichert ✓');
 }
-$('btnAddStop').onclick = () => addOwn('stop', 'btnAddStop');
-$('btnAddRvl').onclick = () => addOwn('rvl', 'btnAddRvl');
+$('btnAddStop').onclick = () => addOwn('stop');
+$('btnAddRvl').onclick = () => addOwn('rvl');
 $('btnFalse').onclick = () => {
-  if (!lastAlertPoi || Date.now() - lastAlertPoi.ts > 120000 && !simTimer) {
+  if (!lastAlertPoi || (Date.now() - lastAlertPoi.ts > 120000 && !simTimer)) {
     if (lastFix) addLog('❌ Fehlalarm (nichts zum Ausblenden)', lastFix.lat, lastFix.lon);
-    flashBtn('btnFalse', 'Keine Warnung in den letzten 2 Min.'); return;
+    toast('Keine Warnung in den letzten 2 Minuten'); return;
   }
   const p = lastAlertPoi.p;
   if (p.own) personal.add = personal.add.filter(q => !(q.t === p.t && q.lat === p.lat && q.lon === p.lon));
   else personal.hide.push({ t: p.t, lat: p.lat, lon: p.lon });
   savePersonal(); applyPersonal(); lastAlertPoi = null;
-  addLog('❌ Fehlalarm ausgeblendet: ' + TYPES[p.t].sub, p.lat, p.lon);
-  flashBtn('btnFalse', 'Ausgeblendet ✓');
+  addLog('❌ Fehlalarm ausgeblendet: ' + TYPES[p.t].title, p.lat, p.lon);
+  toast('Ausgeblendet – kommt nicht wieder ✓');
 };
 $('btnClearOwn').onclick = () => {
-  if ($('btnClearOwn').dataset.sure !== '1') { $('btnClearOwn').dataset.sure = '1'; $('btnClearOwn').textContent = 'Wirklich löschen? Nochmal tippen'; setTimeout(() => { $('btnClearOwn').dataset.sure = ''; $('btnClearOwn').innerHTML = 'Eigene Punkte &amp; Ausblendungen löschen'; }, 3000); return; }
+  const b = $('btnClearOwn');
+  if (b.dataset.sure !== '1') { b.dataset.sure = '1'; b.textContent = 'Wirklich löschen? Nochmal tippen'; setTimeout(() => { b.dataset.sure = ''; b.innerHTML = 'Eigene Punkte &amp; Ausblendungen löschen'; }, 3000); return; }
   personal = { add: [], hide: [] }; savePersonal(); applyPersonal();
-  $('btnClearOwn').dataset.sure = ''; $('btnClearOwn').innerHTML = 'Eigene Punkte &amp; Ausblendungen löschen';
+  b.dataset.sure = ''; b.innerHTML = 'Eigene Punkte &amp; Ausblendungen löschen'; toast('Gelöscht');
 };
 $('btnClearLog').onclick = () => { logEntries = []; store.set('fh_log', logEntries); renderLog(); };
 $('btnCopy').onclick = async () => {
   const text = logEntries.slice().reverse().map(e => `${e.t}\t${e.msg}${e.extra ? '\t' + e.extra : ''}${e.lat != null ? `\thttps://www.openstreetmap.org/?mlat=${e.lat.toFixed(5)}&mlon=${e.lon.toFixed(5)}#map=18/${e.lat.toFixed(5)}/${e.lon.toFixed(5)}` : ''}`).join('\n');
-  try { await navigator.clipboard.writeText(text); $('btnCopy').textContent = 'Kopiert ✓'; }
-  catch (e) { $('btnCopy').textContent = 'Kopieren ging nicht'; }
-  setTimeout(() => $('btnCopy').textContent = 'Protokoll kopieren', 2000);
+  try { await navigator.clipboard.writeText(text); toast('Protokoll kopiert ✓'); } catch (e) { toast('Kopieren ging nicht'); }
 };
 
-/* ---------- Karte & Simulation ---------- */
-function initMap() {
-  if (map || typeof L === 'undefined') return;
-  const c = lastFix ? [lastFix.lat, lastFix.lon] : [47.705, 11.755];
-  map = L.map('map', { preferCanvas: true }).setView(c, 14);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
-  markerLayer = L.layerGroup().addTo(map);
-  simLine = L.polyline([], { color: '#3e7bfa', weight: 4 }).addTo(map);
-  map.on('click', e => { if (!simPicking) return; simPts.push([e.latlng.lat, e.latlng.lng]); simLine.setLatLngs(simPts); });
-  renderMarkers();
-}
-function renderMarkers() {
-  if (!map) return;
-  markerLayer.clearLayers();
-  const col = { stop: '#e5484d', rvl: '#f5a524', yield: '#ffd60a' };
-  for (const p of pois) {
-    if (!settings[p.t]) continue;
-    L.circleMarker([p.lat, p.lon], { radius: 6, color: '#000', weight: 1, fillColor: col[p.t], fillOpacity: .95 })
-      .bindPopup(TYPES[p.t].sub === 'Kreuzung ohne Schild' ? 'Rechts vor links (vermutet)' : TYPES[p.t].sub).addTo(markerLayer);
-  }
-}
-function updateMe(cur) {
-  if (!map) return;
-  if (!meMarker) meMarker = L.circleMarker(cur, { radius: 8, color: '#fff', weight: 3, fillColor: '#3e7bfa', fillOpacity: 1 }).addTo(map);
-  else meMarker.setLatLng(cur);
-  if (simTimer || running) map.panTo(cur, { animate: false });
-}
-$('btnMap').onclick = () => {
-  const w = $('mapWrap'), show = w.style.display === 'none';
-  w.style.display = show ? 'block' : 'none';
-  $('btnMap').textContent = show ? 'Karte ausblenden' : 'Karte zeigen';
-  if (show) { if (typeof L === 'undefined') { $('map').textContent = 'Karte konnte nicht geladen werden (kein Internet?).'; return; } initMap(); setTimeout(() => map.invalidateSize(), 50); }
-};
+/* ---------- Simulation ---------- */
 $('simSpeed').oninput = () => $('simVal').textContent = $('simSpeed').value;
-$('simPick').onclick = () => { simPicking = !simPicking; $('simPick').textContent = simPicking ? 'Fertig' : 'Route antippen'; };
-$('simClear').onclick = () => { stopSim(); simPts = []; simLine && simLine.setLatLngs([]); };
-function stopSim() { if (simTimer) { clearInterval(simTimer); simTimer = null; $('simRun').textContent = 'Simulation starten'; } }
-$('simRun').onclick = () => {
-  if (simTimer) { stopSim(); return; }
-  if (simPts.length < 2) { $('simRun').textContent = 'Erst Route antippen'; setTimeout(() => $('simRun').textContent = 'Simulation starten', 1500); return; }
-  if (!pois.length) { $('runState').textContent = 'Bitte zuerst Kartendaten laden.'; return; }
+$('simPick').onclick = () => {
+  if (!map) { toast('Karte nicht geladen'); return; }
   if (running) stop();
-  unlockOutputs(); simPicking = false; $('simPick').textContent = 'Route antippen';
+  stopSim(); simPts = []; simLine.setLatLngs([]); simPicking = true; setFollow(false);
+  closeSheet();
+  $('simBar').classList.remove('hidden'); $('simText').textContent = 'Tippe Punkte entlang der Straße';
+  $('simRun').textContent = 'Los';
+};
+$('simCancel').onclick = () => {
+  stopSim(); simPicking = false; simPts = []; simLine && simLine.setLatLngs([]);
+  $('simBar').classList.add('hidden'); setNext(null); setRunningUI(running);
+};
+function stopSim() {
+  if (simTimer) { clearInterval(simTimer); simTimer = null; }
+  $('simRun').textContent = 'Los';
+}
+$('simRun').onclick = () => {
+  if (simTimer) { stopSim(); $('simText').textContent = 'Pausiert'; return; }
+  if (simPts.length < 2) { toast('Erst mindestens 2 Punkte antippen'); return; }
+  if (!pois.length) { toast('Keine Kartendaten'); return; }
+  unlockOutputs(); simPicking = false; requestWake();
   anchor = null; last = null; alerted.clear();
   let seg = 0, off = 0, t = Date.now();
-  $('simRun').textContent = 'Simulation stoppen';
-  $('runState').textContent = 'Simulation läuft';
+  $('simRun').textContent = 'Pause'; $('simText').textContent = 'Simulation läuft …';
+  setFollow(true);
   simTimer = setInterval(() => {
     const v = +$('simSpeed').value / 3.6;
     let step = v * 0.5;
@@ -665,13 +868,32 @@ $('simRun').onclick = () => {
       if (off + step <= L2) { off += step; break; }
       step -= (L2 - off); off = 0; seg++;
     }
-    if (seg >= simPts.length - 1) { stopSim(); $('runState').textContent = 'Simulation beendet'; return; }
+    if (seg >= simPts.length - 1) { stopSim(); $('simText').textContent = 'Ziel erreicht ✓'; setNext(null); setRunningUI(running); return; }
     const a = simPts[seg], b = simPts[seg + 1], f = off / Core.dist(a, b);
     const cur = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
     t += 500;
     handleFix(cur[0], cur[1], 5, v, Core.bearing(a, b), t);
   }, 500);
+  setRunningUI(running);
 };
+
+/* ---------- Los geht's ---------- */
+initMap();
+logEntries = store.get('fh_log') || []; renderLog();
+loadPersonal();
+const cached = store.get('fh_pois');
+if (cached && cached.pois) { basePois = cached.pois; baseMeta = cached.meta; }
+applyPersonal();
+loadBundled(false);
+setNext(null);
+// Einmal den Standort holen, damit das Auto gleich auf der Karte steht
+if (navigator.geolocation) navigator.geolocation.getCurrentPosition(pos => {
+  if (running || simTimer) return;
+  const c = pos.coords;
+  lastFix = { lat: c.latitude, lon: c.longitude, acc: c.accuracy, speed: 0, heading: null, ts: Date.now() };
+  updateCar([c.latitude, c.longitude], null, c.accuracy);
+  if (map) map.setView([c.latitude, c.longitude], 16);
+}, () => {}, { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
 })();
 </script>
 </body>
