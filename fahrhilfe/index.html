@@ -7,6 +7,9 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0b0f14">
 <title>Fahrhilfe Tegernsee</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="Fahrhilfe">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
@@ -102,6 +105,12 @@
   <div class="hint" style="margin-top:8px">Die Daten fürs Tal lädt die App beim Öffnen automatisch und speichert sie auf dem Handy.</div>
 </div>
 
+<div class="card" id="setupCard">
+  <h2>iPhone-Vibration einrichten</h2>
+  <div id="setupText" class="hint"></div>
+  <div class="row" style="margin-top:10px"><button id="btnNtf">Mitteilungen erlauben</button></div>
+</div>
+
 <div class="card">
   <h2>Test</h2>
   <div class="row">
@@ -110,8 +119,8 @@
     <button id="tYield"><span class="dot" style="background:var(--yield)"></span>Vorfahrt achten</button>
   </div>
   <div class="hint" style="margin-top:8px">
-    iPhone: Stopp = 3× drei Tipper · Rechts vor links = 3× zwei Tipper · Vorfahrt achten = 3 einzelne Tipper<br>
-    Wichtig: Die Test-Knöpfe sind Fingertipps. Ob die Haptik auch ohne Antippen kommt (wie beim Fahren), zeigt nur die Simulation unten.
+    iPhone: Jede Warnung kommt als Mitteilung und vibriert einmal (Text auf dem Sperrbildschirm sagt, was es ist).<br>
+    Zusätzlich prüfen: Klappt es auch ohne Antippen? Dafür unten die Simulation starten.
   </div>
   <div class="hint" id="diag" style="margin-top:8px"></div>
 </div>
@@ -119,7 +128,8 @@
 <div class="card">
   <h2>Einstellungen</h2>
   <label class="opt"><span>Vibration<small>Android: echte Vibration. iPhone: siehe unten.</small></span><input type="checkbox" id="oVib" checked></label>
-  <label class="opt"><span>iPhone-Haptik<small>Leichtes Antippen (iOS 18 oder neuer)</small></span><input type="checkbox" id="oHap" checked></label>
+  <label class="opt"><span>Mitteilung (iPhone-Vibration)<small>Nur wenn die App vom Home-Bildschirm geöffnet ist</small></span><input type="checkbox" id="oNtf" checked></label>
+  <label class="opt"><span>iPhone-Haptik (alt)<small>Nur bis iOS 26.4, von Apple abgeschaltet</small></span><input type="checkbox" id="oHap" checked></label>
   <label class="opt"><span>Signalton</span><input type="checkbox" id="oSnd"></label>
   <label class="opt"><span>Sprachansage<small>z. B. „Rechts vor links“</small></span><input type="checkbox" id="oVoc"></label>
   <label class="opt"><span>Stoppschilder</span><input type="checkbox" id="oStop" checked></label>
@@ -204,7 +214,7 @@ const TYPES = {
 let map = null, markerLayer = null, meMarker = null, simLine = null, simPts = [], simPicking = false, simTimer = null;
 let pois = [], basePois = [], baseMeta = null, lastAlertPoi = null, grid = new Map(), running = false, watchId = null, wakeLock = null, audioCtx = null;
 let last = null, anchor = null, alerted = new Map(), recent = [], logEntries = [];
-let settings = { vib: true, hap: true, snd: false, voc: false, stop: true, rvl: true, yield: false, lead: 7 };
+let settings = { vib: true, hap: true, ntf: true, snd: false, voc: false, stop: true, rvl: true, yield: false, lead: 7 };
 let lastFix = null;
 
 const store = {
@@ -213,7 +223,7 @@ const store = {
 };
 
 /* ---------- Einstellungen ---------- */
-const optMap = { oVib: 'vib', oHap: 'hap', oSnd: 'snd', oVoc: 'voc', oStop: 'stop', oRvl: 'rvl', oYield: 'yield' };
+const optMap = { oVib: 'vib', oHap: 'hap', oNtf: 'ntf', oSnd: 'snd', oVoc: 'voc', oStop: 'stop', oRvl: 'rvl', oYield: 'yield' };
 Object.assign(settings, store.get('fh_settings') || {});
 for (const [el, k] of Object.entries(optMap)) {
   $(el).checked = !!settings[k];
@@ -377,8 +387,54 @@ function hapticTick() {
 function haptic(times) {
   for (const t of times) { if (t === 0) hapticTick(); else setTimeout(hapticTick, t); }
 }
+/* ---------- Mitteilungen: auf dem iPhone der einzige Weg zu vibrieren ---------- */
+const IS_IOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+const STANDALONE = window.navigator.standalone === true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches);
+let swReg = null;
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js', { scope: './' }).then(r => { swReg = r; updateSetup(); }).catch(() => {});
+}
+function ntfPermission() { return ('Notification' in window) ? Notification.permission : 'unsupported'; }
+function updateSetup() {
+  const perm = ntfPermission();
+  let html;
+  if (IS_IOS && !STANDALONE) {
+    html = '1. Unten in Safari auf <b>Teilen</b> (Quadrat mit Pfeil) tippen<br>2. <b>„Zum Home-Bildschirm“</b> wählen<br>3. Die App über das neue <b>Fahrhilfe-Icon</b> öffnen und hier „Mitteilungen erlauben“ tippen.<br>Nur so darf die App dein iPhone vibrieren lassen.';
+    $('btnNtf').style.display = 'none';
+  } else if (perm === 'granted') {
+    html = '✅ Mitteilungen sind erlaubt. Drück einen Test-Knopf: Das iPhone sollte jetzt vibrieren. Tipp: iPhone auf <b>lautlos</b> stellen, dann vibriert es nur, ohne Ton.';
+    $('btnNtf').style.display = 'none';
+  } else if (perm === 'denied') {
+    html = '❌ Mitteilungen sind blockiert. Einstellungen → Mitteilungen → Fahrhilfe → Mitteilungen erlauben.';
+    $('btnNtf').style.display = 'none';
+  } else if (perm === 'unsupported') {
+    html = 'Dieser Browser kann keine Mitteilungen.' + (IS_IOS ? ' App bitte über das Home-Bildschirm-Icon öffnen.' : '');
+    $('btnNtf').style.display = 'none';
+  } else {
+    html = 'Fast fertig: Tippe auf „Mitteilungen erlauben“ und bestätige mit <b>Erlauben</b>.';
+    $('btnNtf').style.display = '';
+  }
+  $('setupText').innerHTML = html;
+  if (!IS_IOS && navigator.vibrate) $('setupCard').style.display = 'none';
+}
+$('btnNtf').onclick = async () => {
+  try { await Notification.requestPermission(); } catch (e) {}
+  updateSetup();
+};
+function notifyVibrate(T) {
+  if (!settings.ntf || ntfPermission() !== 'granted') return;
+  const title = T.name === 'RECHTS VOR LINKS' ? '⚠️ Rechts vor links' : T.name === 'STOPP' ? '🛑 Stoppschild' : '⚠️ Vorfahrt achten';
+  try {
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) navigator.serviceWorker.controller.postMessage({ type: 'notify', title });
+    else if (swReg) swReg.showNotification(title, { tag: 'fahrhilfe-' + Date.now(), silent: false });
+    else new Notification(title);
+  } catch (e) {}
+}
+updateSetup();
+
 function signal(type) {
   const T = TYPES[type];
+  notifyVibrate(T);
   if (settings.vib && navigator.vibrate) { try { navigator.vibrate(T.vib); } catch (e) {} }
   else if (settings.hap) haptic(T.hap);
   if (settings.snd) beep(T.tones);
@@ -393,8 +449,8 @@ $('flash').onclick = () => $('flash').style.display = 'none';
   const ua = navigator.userAgent, m = ua.match(/OS (\d+)[_.](\d+)/);
   const ios = /iPhone|iPad|iPod/.test(ua) ? (m ? m[1] + '.' + m[2] : '?') : null;
   let txt = ios ? 'iOS ' + ios + ' · ' : '';
-  txt += navigator.vibrate ? 'Vibration: verfügbar' : 'Vibration: vom Browser nicht erlaubt' + (ios ? ', nutze iPhone-Haptik' : '');
-  if (ios && parseFloat(ios) < 18) txt += ' · Achtung: Haptik braucht iOS 18 oder neuer';
+  txt += navigator.vibrate ? 'Vibration: verfügbar' : 'Vibration über Browser: nein';
+  if (ios) txt += ' · Home-Bildschirm-App: ' + (STANDALONE ? 'ja' : 'nein') + ' · Mitteilungen: ' + ({ granted: 'erlaubt', denied: 'blockiert', default: 'noch nicht gefragt', unsupported: 'nicht verfügbar' })[ntfPermission()];
   $('diag').textContent = txt;
 })();
 ['Stop', 'Rvl', 'Yield'].forEach(n => $('t' + n).onclick = () => { unlockOutputs(); signal(n.toLowerCase()); });
