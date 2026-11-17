@@ -83,7 +83,7 @@
 <div class="card">
   <h2>Kartendaten</h2>
   <div class="row">
-    <button id="btnLoadTal">Tegernseer Tal laden</button>
+    <button id="btnLoadTal">Tegernseer Tal + Hausham laden</button>
     <button id="btnLoadHere">Um meinen Standort (±8 km)</button>
   </div>
   <div class="hint" style="margin-top:8px">Einmal mit Internet laden, danach bleiben die Daten auf dem Handy gespeichert.</div>
@@ -344,7 +344,8 @@ if (typeof module !== 'undefined') module.exports = Core;
 /* ===================== APP ===================== */
 (() => {
 const $ = id => document.getElementById(id);
-const TALBOX = [47.615, 11.655, 47.778, 11.835];
+// Kreuth/Glashütte (Süd) bis Moosrain (Nord), Bad Wiessee (West) bis Hausham (Ost)
+const TALBOX = [47.580, 11.650, 47.800, 11.890];
 const ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
@@ -430,7 +431,7 @@ async function loadArea(box, areaName) {
   $('dataStatus').textContent = 'Laden fehlgeschlagen (' + (lastErr && lastErr.message || 'Fehler') + '). Internet prüfen und nochmal versuchen.';
 }
 function setLoadButtons(dis) { $('btnLoadTal').disabled = dis; $('btnLoadHere').disabled = dis; }
-$('btnLoadTal').onclick = () => loadArea(TALBOX, 'Tegernseer Tal');
+$('btnLoadTal').onclick = () => loadArea(TALBOX, 'Tegernseer Tal + Hausham');
 $('btnLoadHere').onclick = () => {
   if (!navigator.geolocation) return;
   $('dataStatus').textContent = 'Bestimme Standort …';
